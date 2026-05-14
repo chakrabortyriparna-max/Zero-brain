@@ -18,6 +18,7 @@ python-dotenv==1.0.1
 # Phase 6-9: Dev & Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0
+tzdata==2025.2  # Required for zoneinfo on Windows CI runners
 
 # Browser automation (Actionbook — user-managed)
 # See demos/README.md for Actionbook CLI installation.
