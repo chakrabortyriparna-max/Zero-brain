@@ -1,0 +1,51 @@
+name: Review Bot Reply
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  reply:
+    # Only respond to comments on pull requests (not regular issues)
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install requests PyGithub
+
+      - name: Fetch previous review comments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/fetch_review_comments.py \
+            --pr ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --output previous_reviews.md
+
+      - name: Generate reply
+        env:
+          OLLAMA_URL: https://ollama.com/api
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/claude_review.py \
+            --reply \
+            --pr ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --question "${{ github.event.comment.body }}" \
+            --previous-review previous_reviews.md
