@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-SessionEnd Hook for Riparna's Second Brain.
-On session end, saves remaining conversation context to the daily log.
+DIAGNOSTIC SessionEnd Hook.
+Logs exactly what stdin receives to a debug file before proceeding.
 """
 import sys
 import json
@@ -9,12 +9,12 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Allow importing shared_extract from the same directory
 sys.path.insert(0, str(SCRIPT_DIR))
 from shared_extract import extract_all_insights  # noqa: E402
 
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DAILY_DIR = PROJECT_ROOT / "Memory" / "daily"
+DEBUG_FILE = PROJECT_ROOT / ".claude" / "data" / "session-end-debug.log"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -35,8 +35,24 @@ def ensure_daily_file(date_str: str) -> Path:
 
 
 def main():
-    # Read session data from stdin if provided
-    lines = sys.stdin.readlines()
+    # Read ALL stdin
+    raw_stdin = sys.stdin.read()
+    lines = raw_stdin.splitlines()
+
+    # DEBUG: log what we received
+    DEBUG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(DEBUG_FILE, "a", encoding="utf-8") as dbg:
+        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        dbg.write(f"\n=== SessionEnd triggered at {now} ===\n")
+        dbg.write(f"Raw stdin length: {len(raw_stdin)} chars\n")
+        dbg.write(f"Number of lines: {len(lines)}\n")
+        if lines:
+            dbg.write("First 5 lines:\n")
+            for i, line in enumerate(lines[:5]):
+                dbg.write(f"  [{i}] {line[:200]}\n")
+        else:
+            dbg.write("STDIN IS EMPTY\n")
+
     transcript = []
     for line in lines:
         line = line.strip()
@@ -49,7 +65,14 @@ def main():
 
     insights = extract_all_insights(transcript)
 
-    # Exit silently when there is nothing to record
+    # DEBUG: log extraction results
+    with open(DEBUG_FILE, "a", encoding="utf-8") as dbg:
+        dbg.write(f"Transcript entries parsed: {len(transcript)}\n")
+        dbg.write(f"Insights extracted: {len(insights)}\n")
+        if insights:
+            for ins in insights:
+                dbg.write(f"  - {ins}\n")
+
     if not insights:
         sys.exit(0)
 

@@ -1,0 +1,9 @@
+# Phase 3: Memory Search (Hybrid RAG)
+fastembed
+sqlite-vec
+numpy
+
+# Phase 4: Integrations
+slack-bolt
+slack_sdk
+PyGithub
