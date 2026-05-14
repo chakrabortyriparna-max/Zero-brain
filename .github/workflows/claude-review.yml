@@ -35,7 +35,7 @@ jobs:
 
       - name: Run Claude Review
         env:
-          OLLAMA_URL: https://ollama.com
+          OLLAMA_URL: https://ollama.com/api
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
