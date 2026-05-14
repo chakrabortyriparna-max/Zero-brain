@@ -1,21 +1,23 @@
 """
 Claude Code Review — posts senior-engineer-level feedback as PR comments.
 
+Uses Ollama Cloud instead of Anthropic API.
+
 Usage:
     python claude_review.py --diff pr_diff.patch --pr 42 --repo owner/repo
 
 Requires:
-    ANTHROPIC_API_KEY env var
+    OLLAMA_URL env var   (e.g., https://ollama.com or your cloud instance)
+    OLLAMA_API_KEY env var (if your cloud provider requires auth)
     GITHUB_TOKEN env var (needs pull-requests:write)
 """
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
 
-from anthropic import Anthropic
+import requests
 from github import Github
 
 
@@ -48,15 +50,23 @@ Format your review as markdown with sections per file. Include a summary at the 
 """
 
 
-def call_claude(prompt: str) -> str:
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
-        model="claude-sonnet-4-6-20251001",
-        max_tokens=4096,
-        system="You are a senior staff engineer. Direct, no filler, strong opinions.",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+def call_ollama(prompt: str) -> str:
+    url = os.environ["OLLAMA_URL"].rstrip("/") + "/api/generate"
+    headers = {"Content-Type": "application/json"}
+    if os.environ.get("OLLAMA_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['OLLAMA_API_KEY']}"
+
+    payload = {
+        "model": "claude-opus-4.7",
+        "prompt": prompt,
+        "system": "You are a senior staff engineer. Direct, no filler, strong opinions.",
+        "stream": False,
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("response", data.get("message", {}).get("content", ""))
 
 
 def post_review(repo_name: str, pr_number: int, body: str) -> None:
@@ -73,8 +83,8 @@ def main() -> int:
     parser.add_argument("--repo", required=True, help="Repo name (owner/repo)")
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[ERROR] ANTHROPIC_API_KEY not set", file=sys.stderr)
+    if not os.environ.get("OLLAMA_URL"):
+        print("[ERROR] OLLAMA_URL not set", file=sys.stderr)
         return 1
     if not os.environ.get("GITHUB_TOKEN"):
         print("[ERROR] GITHUB_TOKEN not set", file=sys.stderr)
@@ -86,7 +96,7 @@ def main() -> int:
         return 0
 
     prompt = build_prompt(diff)
-    review = call_claude(prompt)
+    review = call_ollama(prompt)
 
     print("=== Claude Review ===")
     print(review)

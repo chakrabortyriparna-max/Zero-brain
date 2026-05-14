@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install anthropic PyGithub
+          pip install requests PyGithub
 
       - name: Generate diff
         id: diff
@@ -35,7 +35,8 @@ jobs:
 
       - name: Run Claude Review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OLLAMA_URL: ${{ secrets.OLLAMA_URL }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python .github/scripts/claude_review.py \
