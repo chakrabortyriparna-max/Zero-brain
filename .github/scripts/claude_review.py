@@ -51,13 +51,18 @@ Format your review as markdown with sections per file. Include a summary at the 
 
 
 def call_ollama(prompt: str) -> str:
-    url = os.environ["OLLAMA_URL"].rstrip("/") + "/api/generate"
+    base = os.environ["OLLAMA_URL"].rstrip("/")
+    # If base already ends with /api, use /generate; otherwise use /api/generate
+    if base.endswith("/api"):
+        url = base + "/generate"
+    else:
+        url = base + "/api/generate"
     headers = {"Content-Type": "application/json"}
     if os.environ.get("OLLAMA_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['OLLAMA_API_KEY']}"
 
     payload = {
-        "model": "claude-opus-4.7",
+        "model": "kimi-k2.6:cloud",
         "prompt": prompt,
         "system": "You are a senior staff engineer. Direct, no filler, strong opinions.",
         "stream": False,
