@@ -43,3 +43,6 @@ jobs:
 
       - name: Run DB integrity check
         run: python tests/test_db_integrity.py
+
+      - name: Run hook verification
+        run: python .claude/scripts/verify_hooks.py
