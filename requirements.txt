@@ -1,0 +1,24 @@
+# Zero Brain — Dependencies
+# Pin versions for reproducible CI builds.
+
+# Phase 3: Memory Search (Hybrid RAG)
+fastembed==0.3.6
+sqlite-vec==0.1.3
+numpy==1.26.4
+
+# Phase 4: Integrations
+slack-bolt==1.21.2
+slack-sdk==3.33.1
+PyGithub==2.5.0
+
+# Phase 5: Skills & Workflows
+anthropic==0.42.0
+python-dotenv==1.0.1
+
+# Phase 6-9: Dev & Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+
+# Browser automation (Actionbook — user-managed)
+# See demos/README.md for Actionbook CLI installation.
+# playwright==1.49.0  # Uncomment if using Microsoft Playwright binding

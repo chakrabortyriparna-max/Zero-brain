@@ -1,0 +1,53 @@
+name: Demo Video Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Actionbook CLI is user-managed; see demos/README.md for setup
+
+      - name: Run Demo Script
+        run: |
+          python demos/date_function_demo.py > demos/output/date_demo.log
+
+      - name: Generate Demo Video
+        id: video
+        run: |
+          # [USER_ACTION] Requires Actionbook MCP connected locally.
+          # This step is a placeholder. The actual browser automation
+          # should be triggered via your local Actionbook agent.
+          # See: demos/README.md#actionbook-setup
+          echo "video_path=demos/output/demo-placeholder.mp4" >> $GITHUB_OUTPUT
+          echo "::warning::Actionbook video recording not automated in CI. See demos/README.md."
+
+      - name: Create/Update Demo Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: demo-latest
+          name: "Latest Demo"
+          body: "Automated demo generated on ${{ github.sha }}."
+          files: |
+            demos/output/date_demo.log
+            demos/output/*.mp4
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

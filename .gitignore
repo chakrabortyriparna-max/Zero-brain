@@ -1,18 +1,57 @@
-# Environment
+# Zero Brain — Git Ignore
+# https://github.com/chakrabortyriparna-max/Zero-brain
+
+# Secrets & Credentials
 .env
+*.pem
+*.key
+
+# Python Virtual Environments
 .venv/
+venv/
+
+# Private Memory Vault
+Memory/daily/
+Memory/drafts/active/
+Memory/drafts/sent/
+Memory/clients/
+Memory/team/
+
+# Claude Code State & Databases
+.claude/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Gmail OAuth
+credentials.json
+token.json
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node / Playwright
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Claude Code state
-.claude/data/
-*.db
-
-# Python
-__pycache__/
-*.pyc
-
-# Generated plans
+# Generated plans & outputs
 .agent/
+demos/output/
+demos/videos/
+
