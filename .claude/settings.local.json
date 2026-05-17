@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python .claude/scripts/verify_hooks.py)"
+    ]
+  }
+}

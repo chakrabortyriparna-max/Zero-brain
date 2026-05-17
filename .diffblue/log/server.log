@@ -1,0 +1,37 @@
+Loaded 2 properties from user configuration: C:\Users\chakr\.diffblue\agents\config.properties
+Telemetry Configuration:
+  Local telemetry: ENABLED ? ~/.diffblue/agents/telemetry/
+  Diffblue telemetry: PENDING license check ? https://otlp-gateway-prod-gb-south-1.grafana.net/otlp/v1/logs (timeout: 30s)
+  User telemetry: NONE (no endpoints in ~/.diffblue/agents/config.properties)
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by com.sun.jna.Native in an unnamed module (file:/C:/Users/chakr/.diffblue/agents/server/lib/server.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+__  ____  __  _____   ___  __ ____  ______ 
+ --/ __ \/ / / / _ | / _ \/ //_/ / / / __/ 
+ -/ /_/ / /_/ / __ |/ , _/ ,< / /_/ /\ \   
+--\___\_\____/_/ |_/_/|_/_/|_|\____/___/   
+21:32:31 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:31 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:31 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:31 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:34 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:34 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:34 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+Diffblue telemetry: ENABLED
+21:32:35 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:35 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:35 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:35 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:37 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+21:32:37 INFO  [co.li.id.in.HardwareKeyProvider] (main) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131
+? Diffblue Agents Server started successfully
+   Version: 1.2.1-bd89fbe-windows_amd64
+   Port: 51047
+   License: Active (TRIAL) - Additional Lines Covered: 0 / 5,000
+   Time: 2026-05-14T16:02:37.835874500Z
+21:32:37 INFO  [io.quarkus] (main) diffblue-agents-server 1.2.1-bd89fbe-windows_amd64 on JVM (powered by Quarkus 3.31.1) started in 18.719s. Listening on: http://localhost:51047
+21:32:37 INFO  [io.quarkus] (main) Profile prod activated. 
+21:32:37 INFO  [io.quarkus] (main) Installed features: [cdi, config-yaml, flow, grpc-client, jackson-jq, opentelemetry, rest, rest-client, rest-client-jackson, rest-jackson, smallrye-context-propagation, vertx]
+21:32:49 INFO  [co.li.id.in.HardwareKeyProvider] (executor-thread-2) HW disk: \\.\PHYSICALDRIVE0 model: NT-1TB 2280 (Standard disk drives) serial: 0012924003131

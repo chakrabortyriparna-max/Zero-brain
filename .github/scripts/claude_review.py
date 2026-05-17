@@ -25,7 +25,7 @@ def load_diff(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def build_prompt(diff: str) -> str:
+def build_review_prompt(diff: str) -> str:
     return f"""You are a senior staff engineer reviewing a pull request.
 Review the following diff thoroughly. For each issue you find:
 1. Describe the problem concretely with file and line references.
@@ -47,6 +47,27 @@ Diff:
 ```
 
 Format your review as markdown with sections per file. Include a summary at the top.
+"""
+
+
+def build_reply_prompt(question: str, previous_reviews: str) -> str:
+    return f"""You are a senior staff engineer who previously reviewed a pull request.
+The user has asked a follow-up question about your review. Use the previous review context below to provide a deeper, more detailed explanation.
+
+Previous review comments:
+```markdown
+{previous_reviews}
+```
+
+User's follow-up question:
+"{question}"
+
+Instructions:
+- Answer the question directly and thoroughly.
+- Include code examples or specific file references where helpful.
+- If the question refers to a numbered issue from the previous review, expand on that exact point.
+- Keep the same tone: direct, no filler, senior engineer level.
+- If you need to correct or soften something you said earlier, do so explicitly.
 """
 
 
@@ -83,9 +104,12 @@ def post_review(repo_name: str, pr_number: int, body: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--diff", required=True, help="Path to diff file")
     parser.add_argument("--pr", type=int, required=True, help="PR number")
     parser.add_argument("--repo", required=True, help="Repo name (owner/repo)")
+    parser.add_argument("--diff", help="Path to diff file (for initial review)")
+    parser.add_argument("--reply", action="store_true", help="Reply to a follow-up question")
+    parser.add_argument("--question", help="User's follow-up question text")
+    parser.add_argument("--previous-review", help="Path to file with previous review comments")
     args = parser.parse_args()
 
     if not os.environ.get("OLLAMA_URL"):
@@ -95,17 +119,37 @@ def main() -> int:
         print("[ERROR] GITHUB_TOKEN not set", file=sys.stderr)
         return 1
 
+    if args.reply:
+        if not args.question:
+            print("[ERROR] --reply requires --question", file=sys.stderr)
+            return 1
+        previous = ""
+        if args.previous_review:
+            previous = Path(args.previous_review).read_text(encoding="utf-8")
+        prompt = build_reply_prompt(args.question, previous)
+        reply = call_ollama(prompt)
+        print("=== Reply ===")
+        print(reply)
+        print("=============")
+        post_review(args.repo, args.pr, reply)
+        print(f"[INFO] Reply posted to PR #{args.pr}")
+        return 0
+
+    if not args.diff:
+        print("[ERROR] Either --diff or --reply is required", file=sys.stderr)
+        return 1
+
     diff = load_diff(args.diff)
     if not diff.strip():
         print("[INFO] Empty diff — nothing to review.")
         return 0
 
-    prompt = build_prompt(diff)
+    prompt = build_review_prompt(diff)
     review = call_ollama(prompt)
 
-    print("=== Claude Review ===")
+    print("=== Review ===")
     print(review)
-    print("=====================")
+    print("==============")
 
     post_review(args.repo, args.pr, review)
     print(f"[INFO] Review posted to PR #{args.pr}")
