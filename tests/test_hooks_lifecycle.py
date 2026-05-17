@@ -112,9 +112,12 @@ class TestPreCompact:
         assert result.returncode == 0
         content = daily.read_text(encoding="utf-8")
         assert "## Pre-Compact Flush" in content
-        assert "Decision:** use PostgreSQL" in content
-        assert "Action Item:** review the schema" in content
-        assert "File Change: src/models.py" in content
+        assert "### Decisions" in content
+        assert "- use PostgreSQL" in content
+        assert "### Action Items" in content
+        assert "- review the schema" in content
+        assert "### File Changes" in content
+        assert "- Edited code: src/models.py" in content
 
     def test_empty_stdin(self, isolated_project):
         hooks = isolated_project / ".claude" / "hooks"
@@ -152,7 +155,8 @@ class TestPreCompact:
         )
         assert result.returncode == 0
         content = daily.read_text(encoding="utf-8")
-        assert "Decision:** use Redis" in content
+        assert "### Decisions" in content
+        assert "- use Redis" in content
 
 
 class TestSessionEnd:
@@ -174,7 +178,8 @@ class TestSessionEnd:
         assert result.returncode == 0
         content = daily.read_text(encoding="utf-8")
         assert "## Session End" in content
-        assert "Lesson:** always test before pushing" in content
+        assert "### Lessons" in content
+        assert "- always test before pushing" in content
 
     def test_empty_stdin(self, isolated_project):
         hooks = isolated_project / ".claude" / "hooks"
@@ -240,9 +245,12 @@ class TestCrossSessionLinkage:
         assert result.returncode == 0
         stdout = result.stdout
 
-        assert "Decision:** adopt async SQLAlchemy" in stdout
-        assert "Task Created: Migrate to async" in stdout
-        assert "Lesson:** benchmark before migration" in stdout
+        assert "### Decisions" in stdout
+        assert "- adopt async SQLAlchemy" in stdout
+        assert "### Tasks" in stdout
+        assert "- Created task: Migrate to async" in stdout
+        assert "### Lessons" in stdout
+        assert "- benchmark before migration" in stdout
 
     def test_daily_file_mkdir_bug_fixed(self, isolated_project):
         """Regression: ensure_daily_file used to fail if Memory/daily/ was missing."""

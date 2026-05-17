@@ -141,9 +141,9 @@ second-brain-starter/
 
 | Platform | Status | Auth | Key Files |
 |----------|--------|------|-----------|
-| Gmail | ⏳ Pending setup | OAuth2 Desktop App | `credentials.json`, `.env` (`token.json` auto-generated) |
-| Slack | ⏳ Pending setup | Bot Token (`xoxb-`) + App Token (`xapp-`) | `.env` (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`) |
-| GitHub | ⏳ Pending setup | Fine-Grained PAT | `.env` (`GITHUB_TOKEN`) |
+| Gmail | ✅ Built | OAuth2 Desktop App | `credentials.json`, `.env` (`token.json` auto-generated) |
+| Slack | ✅ Built | Bot Token (`xoxb-`) + App Token (`xapp-`) | `.env` (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`) |
+| GitHub | ✅ Built | Fine-Grained PAT | `.env` (`GITHUB_TOKEN`) |
 | Linear | ⏳ Pending setup | API Key | `.env` (`LINEAR_API_KEY`) |
 
 **Dependencies:** `pip install fastembed sqlite-vec google-api-python-client google-auth-oauthlib slack-bolt slack_sdk PyGithub python-dotenv`

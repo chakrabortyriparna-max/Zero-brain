@@ -3,7 +3,7 @@
 ## 1. About You
 - **Name**: Riparna Chakraborty
 - **Role/Title**: Agentic AI Engineer
-- **What I do daily**: I build automation systems and help others create agentic AI workflows, develop LLM-based solutions, and design modern 3D frontend experiences.
+- **What I do daily**: I build business related automation systems and help others create agentic AI workflows, develop LLM-based solutions, and design modern 3D frontend experiences and many other cool stuffs.
 - **Timezone**: India (IST)
 
 ## 2. Your Platforms
@@ -12,14 +12,14 @@
 - **Task Management (e.g., Asana, Linear, Todoist, Jira)**: Linear
 - **Chat/Messaging (e.g., Slack, Discord, Teams)**: Slack
 - **Notes/Documents (e.g., Notion, Obsidian, Google Docs)**: Obsidian
-- **Cloud Storage (e.g., Google Drive, Dropbox, OneDrive)**: ___
+- **Cloud Storage (e.g., Google Drive, Dropbox, OneDrive)**: Google Drive
 - **Code Hosting (e.g., GitHub, GitLab)**: GitHub
 - **Community (e.g., Circle, Discord server, Mighty Networks)**: ___
 - **CRM (e.g., HubSpot, Salesforce, Pipedrive)**: ___
 - **Other**: OpenCLaw + Claude Code, LLM tooling, 3D frontend tools
 
 ## 3. Top Tasks for AI
-- Draft ML/AI-related email replies and professional communication
+- Draft AI automations and related email replies and professional communication
 - Summarize Slack conversations and extract actionable insights
 - Track project progress and notify about deadlines or blockers
 - Organize research notes and learning resources in Obsidian
