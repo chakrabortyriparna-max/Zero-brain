@@ -1,3 +1,4 @@
+# Decision drift validation: this workflow is currently active and maintained
 name: Tests
 
 on:
