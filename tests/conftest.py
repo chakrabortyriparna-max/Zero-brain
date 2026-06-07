@@ -29,6 +29,12 @@ def isolated_project(tmp_path):
     for f in HOOKS_DIR.glob("*.py"):
         shutil.copy(f, hooks_dir)
 
+    scripts_dir = project / ".claude" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    hooks_common = SCRIPTS_DIR / "hooks_common.py"
+    if hooks_common.exists():
+        shutil.copy(hooks_common, scripts_dir)
+
     (memory_dir / "SOUL.md").write_text("# SOUL\nTest soul\n", encoding="utf-8")
     (memory_dir / "USER.md").write_text("# USER\nTest user\n", encoding="utf-8")
     (memory_dir / "MEMORY.md").write_text("# MEMORY\nTest memory\n", encoding="utf-8")
