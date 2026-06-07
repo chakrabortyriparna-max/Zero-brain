@@ -10,7 +10,14 @@ CHAT_DIR = Path(__file__).resolve().parent.parent / ".claude" / "chat"
 sys.path.insert(0, str(CHAT_DIR))
 
 # Must patch env *before* bot imports App
-with patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test", "SLACK_APP_TOKEN": "xapp-test"}):
+with patch.dict(
+    os.environ,
+    {
+        "SLACK_BOT_TOKEN": "xoxb-test",
+        "SLACK_APP_TOKEN": "xapp-test",
+        "GROQ_API_KEY": "dummy",
+    },
+):
     import bot  # noqa: E402
 
 
