@@ -21,7 +21,7 @@ description: |
   - All other nodes still reference the language-agnostic bundled `archon-*` commands.
     Fork them later if they drift.
 
-provider: claude
+provider: ollama
 model: nemotron-3-ultra:cloud
 
 nodes:

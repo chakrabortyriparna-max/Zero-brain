@@ -1,0 +1,9 @@
+name: test-ollama-provider
+description: Minimal workflow to verify Ollama provider registration.
+provider: ollama
+model: nemotron-3-ultra:cloud
+
+nodes:
+  - id: hello
+    bash: |
+      echo "Ollama provider is reachable. Model: nemotron-3-ultra:cloud"
