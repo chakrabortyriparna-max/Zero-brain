@@ -59,7 +59,7 @@ description: |
   falls back to basic health checks and static validation. See the
   `.claude/skills/agent-browser/SKILL.md` skill for CLI reference.
 
-provider: claude
+provider: ollama
 model: nemotron-3-ultra:cloud
 
 nodes:
