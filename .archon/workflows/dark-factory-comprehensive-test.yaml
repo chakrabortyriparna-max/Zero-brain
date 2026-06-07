@@ -1,0 +1,414 @@
+name: dark-factory-comprehensive-test
+description: |
+  Use when: Weekly cron fires a full end-to-end regression against `main`.
+            NOT triggered by the 4-hour orchestrator - runs on its own
+            separate schedule.
+  Triggers: Weekly cron (0 6 * * 1 UTC), or manual "run comprehensive test".
+  Does: Checks out main -> detects and starts a runnable app on a dynamic
+        free port if one exists, otherwise skips E2E -> runs 4 validation
+        scenarios sequentially (health check, unit tests, integration,
+        static checks) -> tears down -> synthesizes a report -> auto-files
+        GitHub issues on failures (with dedup) so triage picks them up and
+        the factory heals itself.
+  NOT for: Per-PR validation (dark-factory-validate-pr), triage
+           (dark-factory-triage), issue implementation
+           (dark-factory-fix-github-issue).
+
+  =====================================================================
+  WHY THIS EXISTS - the self-healing loop
+  =====================================================================
+
+  This workflow closes the feedback loop that makes the Dark Factory actually
+  self-evolving: comprehensive test finds a regression in running code -> files
+  a GitHub issue with evidence -> triage accepts it -> fix-github-issue opens
+  a PR -> validate-pr holds it out -> merge. No human in the loop unless all
+  of that fails.
+
+  Unlike validate-pr, this workflow is NOT bound by the holdout principle -
+  it runs against main (which is already merged code), so there's nothing to
+  hold out from. It can read anything, run anything, and its only output is
+  "did this feature still work when I exercised it?".
+
+  Prerequisite: `agent-browser` must be installed and available on PATH. On
+  the factory VPS this is installed globally (v0.25.3 + Chrome for
+  Testing). Locally, `npm i -g agent-browser && agent-browser install`.
+  See the `.claude/skills/agent-browser/SKILL.md` skill for CLI reference.
+
+provider: claude
+model: sonnet
+
+nodes:
+  # =====================================================================
+  # PHASE 1: SETUP - checkout main, install deps, start the app
+  # =====================================================================
+
+  - id: pull-latest
+    bash: |
+      set -euo pipefail
+      # Snap this worktree's file content to origin/main's tip.
+      #
+      # We deliberately do NOT `git checkout main` here. Archon spawns this
+      # workflow in a *linked* worktree, and the user's main working tree
+      # already holds branch `main` - git refuses to have the same branch
+      # checked out in two worktrees at once, so the checkout fails with:
+      #   fatal: 'main' is already used by worktree at '...'
+      # The validate-pr workflow's stale-worktree-prune pattern doesn't
+      # apply here either: it searches for worktrees holding a PR branch
+      # (which only Archon ever checks out), but `main` is legitimately
+      # held by the user's primary clone. We must NEVER force-remove that.
+      #
+      # Fetch + hard-reset gives us main's exact file content without ever
+      # needing to flip HEAD onto the `main` branch. We intentionally do
+      # not `git clean -fd .archon/` - that line was wiping the in-flight
+      # workflow YAML from the Archon worktree itself. `git reset --hard`
+      # already restores tracked files to origin/main, which is all we
+      # need.
+      git fetch origin main --quiet
+      git reset --hard origin/main
+      echo "Reset to origin/main at $(git rev-parse --short HEAD)"
+    timeout: 60000
+
+  - id: install-deps
+    bash: |
+      set -euo pipefail
+      export PATH="$HOME/.local/bin:$PATH"
+      if [ -f "requirements.txt" ]; then
+        echo "=== Python deps (pip install) ==="
+        pip install -r requirements.txt 2>&1 | tail -10
+      elif [ -f "pyproject.toml" ]; then
+        echo "=== Python deps (uv sync) ==="
+        uv sync --all-extras 2>&1 | tail -10
+      fi
+      if [ -f "package.json" ]; then
+        echo "=== JS deps (npm install) ==="
+        npm install 2>&1 | tail -10
+      fi
+      echo "DEPS_INSTALL_DONE"
+    depends_on: [pull-latest]
+    idle_timeout: 300000
+
+  - id: start-app
+    bash: |
+      set -euo pipefail
+      export PATH="$HOME/.local/bin:$PATH"
+
+      APP_PORT=""
+      E2E_MODE="skipped"
+
+      find_free_port() {
+        local start=$1 end=$2
+        for port in $(seq $start $end); do
+          if ! (echo >/dev/tcp/127.0.0.1/$port) 2>/dev/null; then
+            echo $port; return 0
+          fi
+        done
+        echo "ERROR: no free port in range $start-$end" >&2; return 1
+      }
+
+      # Generic app startup detection.
+      # If the repo has a runnable app (common patterns below), start it on a
+      # dynamic port. Otherwise mark E2E as skipped so downstream scenarios
+      # degrade gracefully to static-only validation.
+      if [ -f "main.py" ] || [ -f "app/backend/main.py" ] || [ -f "backend/main.py" ] || [ -f "src/main.py" ] || [ -f "server.py" ] || [ -f "app.py" ]; then
+        APP_PORT=$(find_free_port 15100 15999)
+        mkdir -p "$ARTIFACTS_DIR/app-logs"
+        if [ -f "main.py" ]; then
+          (
+            nohup python main.py --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        elif [ -f "app/backend/main.py" ]; then
+          (
+            cd app/backend
+            nohup uvicorn main:app --host 127.0.0.1 --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        elif [ -f "backend/main.py" ]; then
+          (
+            cd backend
+            nohup uvicorn main:app --host 127.0.0.1 --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        elif [ -f "src/main.py" ]; then
+          (
+            cd src
+            nohup uvicorn main:app --host 127.0.0.1 --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        elif [ -f "server.py" ]; then
+          (
+            nohup python server.py --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        elif [ -f "app.py" ]; then
+          (
+            nohup python app.py --port "$APP_PORT" \
+              > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+            echo $! > "$ARTIFACTS_DIR/.app-pid"
+          )
+        fi
+        echo "Waiting for app on :$APP_PORT ..."
+        for i in $(seq 1 60); do
+          if curl -sf "http://127.0.0.1:$APP_PORT/health" > /dev/null 2>&1 || \
+             curl -sf "http://127.0.0.1:$APP_PORT/api/health" > /dev/null 2>&1; then
+            echo "APP_STARTED port=$APP_PORT after ${i}s"
+            E2E_MODE="app"
+            break
+          fi
+          if [ $i -eq 60 ]; then
+            echo "ERROR: app failed to start in 60s" >&2
+            tail -50 "$ARTIFACTS_DIR/app-logs/app.log" >&2 || true
+            exit 1
+          fi
+          sleep 1
+        done
+
+      elif [ -f "package.json" ] && grep -q '"start"' package.json 2>/dev/null; then
+        APP_PORT=$(find_free_port 16100 16999)
+        mkdir -p "$ARTIFACTS_DIR/app-logs"
+        (
+          nohup npm start -- --port "$APP_PORT" \
+            > "$ARTIFACTS_DIR/app-logs/app.log" 2>&1 &
+          echo $! > "$ARTIFACTS_DIR/.app-pid"
+        )
+        echo "Waiting for app on :$APP_PORT ..."
+        for i in $(seq 1 60); do
+          if curl -sf "http://127.0.0.1:$APP_PORT" > /dev/null 2>&1; then
+            echo "APP_STARTED port=$APP_PORT after ${i}s"
+            E2E_MODE="app"
+            break
+          fi
+          if [ $i -eq 60 ]; then
+            echo "ERROR: app failed to start in 60s" >&2
+            tail -50 "$ARTIFACTS_DIR/app-logs/app.log" >&2 || true
+            exit 1
+          fi
+          sleep 1
+        done
+      else
+        echo "No runnable app detected — E2E scenarios will be skipped."
+        echo "E2E_SKIPPED" > "$ARTIFACTS_DIR/.e2e-status"
+        E2E_MODE="skipped"
+      fi
+
+      echo "$E2E_MODE" > "$ARTIFACTS_DIR/.e2e-mode"
+      if [ -n "$APP_PORT" ]; then
+        echo "$APP_PORT" > "$ARTIFACTS_DIR/.app-port"
+      fi
+    depends_on: [install-deps]
+    idle_timeout: 180000
+
+  # =====================================================================
+  # PHASE 2: SCENARIO TESTS (sequential, agent-browser state is global)
+  # =====================================================================
+  # agent-browser maintains a single shared browser session on the VPS.
+  # Parallel scenario nodes would race each other opening/closing the same
+  # session. Run them sequentially in a chain. Latency is irrelevant - this
+  # is a weekly run.
+  #
+  # Each scenario node:
+  #   - runs in fresh context (no knowledge of other scenarios)
+  #   - has allowed_tools: [Bash] + skills: [agent-browser]
+  #   - outputs structured JSON via output_format
+  #   - writes $ARTIFACTS_DIR/test-<name>.md as human-readable evidence
+  #   - takes at least one screenshot for proof
+  #   - corresponds to a generic quality gate: health check, unit tests,
+  #     integration, or static checks
+
+  - id: test-chat-ui
+    command: dark-factory-test-chat-ui
+    depends_on: [start-app]
+    context: fresh
+    skills: [agent-browser]
+    idle_timeout: 300000
+    output_format:
+      type: object
+      properties:
+        status: { type: string, enum: ["pass", "fail"] }
+        summary: { type: string }
+        evidence: { type: array, items: { type: string } }
+        failure_reason: { type: ["string", "null"] }
+      required: [status, summary, evidence, failure_reason]
+
+  - id: test-video-ingestion
+    command: dark-factory-test-video-ingestion
+    depends_on: [test-chat-ui]
+    context: fresh
+    skills: [agent-browser]
+    idle_timeout: 600000
+    output_format:
+      type: object
+      properties:
+        status: { type: string, enum: ["pass", "fail"] }
+        summary: { type: string }
+        evidence: { type: array, items: { type: string } }
+        failure_reason: { type: ["string", "null"] }
+      required: [status, summary, evidence, failure_reason]
+
+  - id: test-rag-response
+    command: dark-factory-test-rag-response
+    depends_on: [test-video-ingestion]
+    context: fresh
+    skills: [agent-browser]
+    idle_timeout: 300000
+    output_format:
+      type: object
+      properties:
+        status: { type: string, enum: ["pass", "fail"] }
+        summary: { type: string }
+        evidence: { type: array, items: { type: string } }
+        failure_reason: { type: ["string", "null"] }
+      required: [status, summary, evidence, failure_reason]
+
+  - id: test-conversation-history
+    command: dark-factory-test-conversation-history
+    depends_on: [test-rag-response]
+    context: fresh
+    skills: [agent-browser]
+    idle_timeout: 300000
+    output_format:
+      type: object
+      properties:
+        status: { type: string, enum: ["pass", "fail"] }
+        summary: { type: string }
+        evidence: { type: array, items: { type: string } }
+        failure_reason: { type: ["string", "null"] }
+      required: [status, summary, evidence, failure_reason]
+
+  # =====================================================================
+  # PHASE 3: TEARDOWN - must always run (trigger_rule: all_done)
+  # =====================================================================
+
+  - id: teardown
+    bash: |
+      set +e
+      if [ -f "$ARTIFACTS_DIR/.app-pid" ]; then
+        APP_PID=$(cat "$ARTIFACTS_DIR/.app-pid")
+        kill "$APP_PID" 2>/dev/null && echo "killed app PID $APP_PID" || echo "app already dead"
+      fi
+      # Best-effort close any lingering agent-browser session
+      agent-browser close 2>/dev/null || true
+      echo "TEARDOWN_COMPLETE"
+    depends_on:
+      - test-chat-ui
+      - test-video-ingestion
+      - test-rag-response
+      - test-conversation-history
+    trigger_rule: all_done
+    timeout: 30000
+
+  # =====================================================================
+  # PHASE 4: REPORT + FILE ISSUES
+  # =====================================================================
+
+  - id: report
+    command: dark-factory-comprehensive-report
+    depends_on: [teardown]
+    context: fresh
+    idle_timeout: 180000
+
+  - id: file-issues
+    depends_on: [report]
+    bash: |
+      set -euo pipefail
+      REPORT="$ARTIFACTS_DIR/comprehensive-test-report.md"
+      if [ ! -f "$REPORT" ]; then
+        echo "ERROR: report file missing at $REPORT" >&2
+        exit 1
+      fi
+
+      # Infra-failure guard (belt-and-suspenders with the report prompt).
+      # If fewer than 4 test-*.md files exist, the scenario nodes were
+      # skipped (an upstream node failed) and any "failures" the report
+      # enumerates are fabricated - the synthesizer saw missing files and
+      # called them FAIL. Do NOT file issues in that case; the factory
+      # must never spam GitHub with bogus product bugs when it cannot
+      # prove its own test harness ran. This is the comprehensive-test
+      # analog of validate-pr's Fix #8 "rule 0".
+      TEST_MD_COUNT=$(find "$ARTIFACTS_DIR" -maxdepth 1 -name "test-*.md" 2>/dev/null | wc -l)
+      TEST_MD_COUNT=$(echo "$TEST_MD_COUNT" | tr -d ' ')
+      if [ "$TEST_MD_COUNT" -lt 4 ]; then
+        echo "INFRA_FAILURE: found $TEST_MD_COUNT test-*.md files (expected 4)."
+        echo "Scenarios were skipped or crashed before writing evidence."
+        echo "Not filing any issues."
+        echo "[]" > "$ARTIFACTS_DIR/filed-issues.json"
+        exit 0
+      fi
+
+      # Extract the JSON block from the report. The report synthesizer
+      # wraps the failure list in a ```json fenced block.
+      FAILURES_JSON=$(awk '
+        /^```json/ {flag=1; next}
+        /^```/     {flag=0}
+        flag        {print}
+      ' "$REPORT")
+
+      if [ -z "$FAILURES_JSON" ]; then
+        echo "WARN: no JSON failure block found in report - treating as 0 failures"
+        FAILURES_JSON="[]"
+      fi
+
+      COUNT=$(echo "$FAILURES_JSON" | jq 'length')
+      echo "Report lists $COUNT failure(s)"
+
+      if [ "$COUNT" = "0" ]; then
+        echo "No failures to file. Comprehensive test: ALL GREEN."
+        echo "[]" > "$ARTIFACTS_DIR/filed-issues.json"
+        exit 0
+      fi
+
+      > "$ARTIFACTS_DIR/filed-issues.json.tmp"
+      echo "[" > "$ARTIFACTS_DIR/filed-issues.json.tmp"
+      FIRST=1
+
+      echo "$FAILURES_JSON" | jq -c '.[]' | while read -r failure; do
+        TITLE=$(echo "$failure" | jq -r '.title')
+        BODY=$(echo "$failure" | jq -r '.body')
+        SCENARIO=$(echo "$failure" | jq -r '.scenario')
+
+        # Dedup: search open issues with the same title already labeled
+        # factory:from-comprehensive-test. If one exists, skip creating a
+        # duplicate - the existing issue will continue through the triage
+        # pipeline on its own.
+        EXISTING=$(gh issue list \
+          --state open \
+          --label "factory:from-comprehensive-test" \
+          --search "$TITLE in:title" \
+          --json number,title \
+          --jq '.[0].number // empty')
+
+        if [ -n "$EXISTING" ]; then
+          echo "Skipping duplicate of #$EXISTING for scenario=$SCENARIO"
+          NUMBER="$EXISTING"
+          ACTION="deduped"
+        else
+          NUMBER=$(gh issue create \
+            --title "$TITLE" \
+            --body  "$BODY" \
+            --label "bug" \
+            --label "factory:from-comprehensive-test" \
+            | awk -F/ '{print $NF}')
+          echo "Filed issue #$NUMBER for scenario=$SCENARIO"
+          ACTION="created"
+        fi
+
+        if [ $FIRST -eq 0 ]; then
+          echo "," >> "$ARTIFACTS_DIR/filed-issues.json.tmp"
+        fi
+        FIRST=0
+        echo "{\"scenario\":\"$SCENARIO\",\"issue\":$NUMBER,\"action\":\"$ACTION\"}" \
+          >> "$ARTIFACTS_DIR/filed-issues.json.tmp"
+      done
+
+      echo "" >> "$ARTIFACTS_DIR/filed-issues.json.tmp"
+      echo "]" >> "$ARTIFACTS_DIR/filed-issues.json.tmp"
+      mv "$ARTIFACTS_DIR/filed-issues.json.tmp" "$ARTIFACTS_DIR/filed-issues.json"
+
+      echo "=== filed-issues.json ==="
+      cat "$ARTIFACTS_DIR/filed-issues.json"
+    timeout: 120000

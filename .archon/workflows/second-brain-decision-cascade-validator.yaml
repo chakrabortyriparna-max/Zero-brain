@@ -1,0 +1,273 @@
+name: second-brain-decision-cascade-validator
+description: |
+  Use when: You want to audit whether recent code/commits/Slack discussions
+  contradict decisions stored in your Second Brain vault.
+  Triggers: "check decision drift", "validate decisions", "audit consistency",
+            "run decision cascade", "any contradictions in my vault?"
+  Does: Ingests decisions from Memory/daily/, MEMORY.md, and project status files;
+        fetches GitHub + Slack context; classifies decision disposition;
+        drafts high-confidence drift alerts for human approval.
+  NOT for: Creating new decisions, editing vault files directly without approval,
+           or analyzing non-project decisions.
+
+interactive: true
+
+nodes:
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 1: INGESTION
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: ingest-decisions
+    bash: |
+      set -euo pipefail
+      python .claude/scripts/decision_ingest.py \
+        --days 30 \
+        --sources daily,memory,projects \
+        --output "$ARTIFACTS_DIR/decisions.json"
+      cat "$ARTIFACTS_DIR/decisions.json"
+
+  - id: ingest-state
+    bash: |
+      set -euo pipefail
+      STATE_FILE=".claude/data/state/decision-validator-state.json"
+      if [ -f "$STATE_FILE" ]; then
+        cat "$STATE_FILE"
+      else
+        echo '{"processed_hashes":[],"feedback_log":[]}'
+      fi
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 2: CLASSIFICATION + FILTERING
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: classify-decisions
+    bash: |
+      python -c '
+      import json, sys, subprocess
+      decisions_path = sys.argv[1]
+      model = sys.argv[2]
+      with open(decisions_path, "r", encoding="utf-8") as f:
+        decisions = json.load(f)
+      prompt = (
+        "You are a Decision Taxonomist for a Second Brain system.\n"
+        "Classify each decision by stability and project mapping.\n\n"
+        "## Decisions\n" + json.dumps(decisions, indent=2, ensure_ascii=False) + "\n\n"
+        "## Rules\n"
+        "- stability: committed (firm) | tentative (may change) | expired (dated, time-bound)\n"
+        "- project_tag: normalize to kebab-case repo name or \"general\"\n"
+        "- Only process committed or tentative decisions. Skip expired.\n\n"
+        "Output a JSON object with a single key \"decisions\" containing an array of objects.\n"
+        "Each object must have: id, text, stability, project_tag, decision_hash."
+      )
+      subprocess.run([
+        sys.executable, ".claude/scripts/ollama_generate.py",
+        "--model", model,
+        "--format", "json",
+        "--prompt", prompt
+      ])
+      ' "$ARTIFACTS_DIR/decisions.json" "qwen2.5-coder:1.5b"
+    depends_on: [ingest-decisions]
+
+  - id: filter-unprocessed
+    script: |
+      const decisions = $classify-decisions.output;
+      const state = $ingest-state.output;
+      const processed = new Set(state.processed_hashes);
+      const fresh = decisions.decisions.filter(d => !processed.has(d.decision_hash));
+      console.log(JSON.stringify({ count: fresh.length, decisions: fresh }));
+    runtime: bun
+    depends_on: [classify-decisions, ingest-state]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 3: SIGNAL FETCHING (Parallel)
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: fetch-github
+    bash: |
+      set -euo pipefail
+      python .claude/scripts/decision_fetch_signals.py \
+        --source github \
+        --decisions "$ARTIFACTS_DIR/decisions.json" \
+        --days 7 \
+        --output "$ARTIFACTS_DIR/github_signals.json"
+      cat "$ARTIFACTS_DIR/github_signals.json"
+    depends_on: [filter-unprocessed]
+    when: "$filter-unprocessed.output.count > '0'"
+
+  - id: fetch-slack
+    bash: |
+      set -euo pipefail
+      python .claude/scripts/decision_fetch_signals.py \
+        --source slack \
+        --decisions "$ARTIFACTS_DIR/decisions.json" \
+        --days 7 \
+        --output "$ARTIFACTS_DIR/slack_signals.json"
+      cat "$ARTIFACTS_DIR/slack_signals.json"
+    depends_on: [filter-unprocessed]
+    when: "$filter-unprocessed.output.count > '0'"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 4: CORE ANALYSIS
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: cross-reference
+    bash: |
+      python -c '
+      import json, sys, subprocess
+      decisions_path = sys.argv[1]
+      github_path = sys.argv[2]
+      slack_path = sys.argv[3]
+      model = sys.argv[4]
+      with open(decisions_path, "r", encoding="utf-8") as f:
+        decisions = json.load(f)
+      with open(github_path, "r", encoding="utf-8") as f:
+        github_signals = json.load(f)
+      with open(slack_path, "r", encoding="utf-8") as f:
+        slack_signals = json.load(f)
+      prompt = (
+        "# Decision Disposition Engine\n\n"
+        "## Decisions to Analyze\n" + json.dumps(decisions, indent=2, ensure_ascii=False) + "\n\n"
+        "## GitHub Signals (commits, PR titles, diff summaries)\n"
+        + json.dumps(github_signals, indent=2, ensure_ascii=False) + "\n\n"
+        "## Slack Signals (messages, thread summaries)\n"
+        + json.dumps(slack_signals, indent=2, ensure_ascii=False) + "\n\n"
+        "## Classification Taxonomy (MANDATORY — no shortcuts)\n\n"
+        "For each decision-signal pair, choose ONE disposition:\n\n"
+        "| Disposition | Definition | Alert? |\n"
+        "|-------------|------------|--------|\n"
+        "| active | Decision still aligns with reality. No contradiction. | NO |\n"
+        "| evolved | Reality changed, but a newer decision explicitly updated the old one. | NO |\n"
+        "| rescinded | Team explicitly reversed this decision in a meeting/decision log. | NO |\n"
+        "| abandoned | The code/project tied to this decision was removed without ceremony. Decision is orphaned. | YES |\n"
+        "| misaligned | Reality contradicts the decision, and NO explicit reversal exists. This is silent drift. | YES |\n\n"
+        "## Scoring Rules\n"
+        "- confidence_score: 0.0–1.0. Only include if >= 0.8.\n"
+        "- reasoning: One sentence explaining why this disposition was chosen.\n"
+        "- evidence_links: File paths, commit SHAs, or Slack message URLs.\n\n"
+        "CRITICAL: Do not invent signals. If evidence is weak, classify as active with low confidence.\n\n"
+        "Output a JSON object with a single key \"results\" containing an array of objects.\n"
+        "Each object must have: decision_id, disposition, confidence_score, reasoning, evidence_links."
+      )
+      subprocess.run([
+        sys.executable, ".claude/scripts/ollama_generate.py",
+        "--model", model,
+        "--format", "json",
+        "--prompt", prompt
+      ])
+      ' "$ARTIFACTS_DIR/decisions.json" "$ARTIFACTS_DIR/github_signals.json" "$ARTIFACTS_DIR/slack_signals.json" "gemma4:31b-cloud"
+    depends_on: [fetch-github, fetch-slack]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 5: ALERT GENERATION
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: filter-alerts
+    script: |
+      const data = $cross-reference.output;
+      const alerts = data.results.filter(r =>
+        (r.disposition === 'abandoned' || r.disposition === 'misaligned') &&
+        r.confidence_score >= 0.8
+      );
+      console.log(JSON.stringify({ alert_count: alerts.length, alerts }));
+    runtime: bun
+    depends_on: [cross-reference]
+
+  - id: generate-alert-draft
+    bash: |
+      set -euo pipefail
+      ALERTS_FILE="$ARTIFACTS_DIR/filter_alerts.json"
+      cat << '__EOF__' > "$ALERTS_FILE"
+      $filter-alerts.output
+      __EOF__
+      python -c '
+      import json, sys, subprocess
+      alerts_path = sys.argv[1]
+      model = sys.argv[2]
+      with open(alerts_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+      alerts = data.get("alerts", [])
+      prompt = (
+        "Draft Decision Drift Alert markdown blocks for Riparna\'s daily log.\n\n"
+        "## Alerts\n" + json.dumps(alerts, indent=2, ensure_ascii=False) + "\n\n"
+        "## Format\n"
+        "Each alert must follow this exact template:\n\n"
+        "**Decision Drift Alert**\n"
+        "- **Original Decision** ({date}): {text}\n"
+        "- **Disposition**: {abandoned | misaligned}\n"
+        "- **Confidence**: {score}\n"
+        "- **Evidence**: {links}\n"
+        "- **Reasoning**: {reasoning}\n"
+        "- **Feedback**: Pending — reply **Feedback:** VALID or INVALID\n\n"
+        "Write the complete markdown below."
+      )
+      subprocess.run([
+        sys.executable, ".claude/scripts/ollama_generate.py",
+        "--model", model,
+        "--prompt", prompt
+      ])
+      ' "$ALERTS_FILE" "nemotron-3-super:cloud"
+    depends_on: [filter-alerts]
+    when: "$filter-alerts.output.alert_count > '0'"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 6: HUMAN GATE
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: approval-gate
+    approval:
+      message: |
+        ## Decision Cascade Validator — Alert Review
+
+        $filter-alerts.output.alert_count drift alerts detected.
+
+        Preview:
+        $generate-alert-draft.output
+
+        Approve to append to today's daily log. Reject to discard.
+      capture_response: false
+    depends_on: [generate-alert-draft]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 7: COMMIT + STATE UPDATE
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: append-to-daily-log
+    bash: |
+      set -euo pipefail
+      TODAY=$(date +%Y-%m-%d)
+      DAILY_FILE="Memory/daily/${TODAY}.md"
+
+      if [ ! -f "$DAILY_FILE" ]; then
+        echo "ERROR: Daily log $DAILY_FILE does not exist. Run heartbeat first."
+        exit 1
+      fi
+
+      echo "" >> "$DAILY_FILE"
+      echo "## Decision Cascade Validator — $(date +%H:%M)" >> "$DAILY_FILE"
+      echo "$generate-alert-draft.output" >> "$DAILY_FILE"
+      echo "Appended to $DAILY_FILE"
+    depends_on: [approval-gate]
+    when: "$approval-gate.output == 'approved'"
+
+  - id: update-state
+    bash: |
+      set -euo pipefail
+      python .claude/scripts/decision_update_state.py \
+        --decisions "$ARTIFACTS_DIR/decisions.json" \
+        --state-file ".claude/data/state/decision-validator-state.json"
+    depends_on: [approval-gate]
+    when: "$approval-gate.output == 'approved'"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 8: SUMMARY
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: summary
+    bash: |
+      echo "## Decision Cascade Validator — Run Summary"
+      echo ""
+      echo "- Workflow completed"
+      echo "- If alerts were detected, they were reviewed via the approval gate"
+      echo "- Status: check daily log for appended alerts"
+    depends_on: [append-to-daily-log, update-state]
+    trigger_rule: all_done

@@ -1,0 +1,442 @@
+name: brand-forge
+description: |
+  Use when: User wants to create a new brand, product, or project from scratch with adversarial validation.
+  Triggers: "brand forge", "create brand", "start project", "launch product", "forge brand",
+            "adversarial brand", "build and brand", "brand project starter".
+  Does: Adversarial brand & project starter. Strategist writes a Brand PRD with GTM sprints.
+        Forge scaffolds code, assets, and copy. Multi-headed Critic attacks it across market
+        positioning, compliance, technical performance, brand voice consistency, and security.
+        Uses qwen2.5-coder:1.5b for cheap sprints; automatically escalates to
+        nemotron-3-super:cloud after 3 failed retries.
+  NOT for: Refactoring existing brands, simple logo requests, one-page static sites.
+
+provider: pi
+model: ollama/qwen2.5-coder:1.5b
+
+nodes:
+  # Phase 1: Brand PRD & Sprint Plan
+  - id: plan
+    prompt: |
+      You are a senior brand strategist, product planner, and GTM expert. Take the user's
+      request and expand it into a comprehensive Brand & Product PRD.
+
+      ## User Request
+
+      $ARGUMENTS
+
+      ## Your Task
+
+      Write the PRD to `$ARTIFACTS_DIR/spec.md` using the Write tool. Do NOT output as conversation text.
+
+      The PRD MUST include ALL of the following sections:
+
+      ### 1. Brand Overview
+      What the product/brand does, target audience, core value proposition, brand promise.
+
+      ### 2. Market Positioning
+      Competitive landscape, differentiation strategy, pricing tier, key competitors to avoid overlap with.
+
+      ### 3. Visual Identity
+      Specific hex codes for primary, secondary, and accent colors. Typography (exact font names
+      and weights). Component patterns, spacing system, logo description or concept.
+
+      ### 4. Brand Voice & Tone
+      Personality traits (e.g., "Playful but professional"), do's and don'ts, sample copy for
+      homepage hero, primary CTA, error messages, and footer.
+
+      ### 5. Tech Stack
+      Concrete choices: framework, hosting, CMS, analytics, auth, payment. Exact package names
+      and versions where relevant.
+
+      ### 6. Feature List
+      Exhaustive features organized by MoSCoW priority (Must have, Should have, Could have).
+
+      ### 7. Sprint Plan (GTM)
+      Features broken into 3-6 sprints, ordered by dependency:
+      - **Sprint 1**: Foundation — scaffold, core brand assets, design tokens, landing shell
+      - **Sprint 2**: Core Product Features
+      - **Sprint 3**: Brand Voice & Copy
+      - **Sprint 4**: Compliance, Security, & Accessibility
+      - **Sprint 5**: Performance, SEO, & Social Proof
+      - **Sprint 6**: Launch Readiness & Funnel Optimization
+
+      Be specific and opinionated. The more concrete the spec, the better the Forge can build
+      and the Critic can test.
+    allowed_tools: [Read, Write, Glob, Grep]
+
+  # Phase 2: Workspace Initialization
+  - id: init-workspace
+    depends_on: [plan]
+    bash: |
+      ARTIFACTS="$ARTIFACTS_DIR"
+
+      mkdir -p "$ARTIFACTS/contracts"
+      mkdir -p "$ARTIFACTS/feedback"
+      mkdir -p "$ARTIFACTS/app"
+
+      cd "$ARTIFACTS/app"
+      git init -q
+      git commit --allow-empty -m "Initial commit: brand-forge workspace" -q
+
+      SPEC="$ARTIFACTS/spec.md"
+      SPRINT_COUNT=3
+      if [ -f "$SPEC" ]; then
+        FOUND=$(grep -ioE 'sprint\s+[0-9]+' "$SPEC" | grep -oE '[0-9]+' | sort -n | tail -1)
+        if [ -n "$FOUND" ] && [ "$FOUND" -ge 1 ] 2>/dev/null; then
+          SPRINT_COUNT=$FOUND
+        fi
+        if [ "$SPRINT_COUNT" -gt 10 ]; then
+          SPRINT_COUNT=10
+        fi
+      fi
+
+      cat > "$ARTIFACTS/state.json" << 'STATEEOF'
+      {
+        "phase": "negotiating",
+        "sprint": 1,
+        "totalSprints": SPRINT_COUNT_PLACEHOLDER,
+        "retry": 0,
+        "maxRetries": 3,
+        "modelTier": "cheap",
+        "passThreshold": 7,
+        "completedSprints": [],
+        "status": "running"
+      }
+      STATEEOF
+      STATE_TMP="$ARTIFACTS/state.json.tmp"
+      sed "s/SPRINT_COUNT_PLACEHOLDER/$SPRINT_COUNT/" "$ARTIFACTS/state.json" > "$STATE_TMP"
+      mv "$STATE_TMP" "$ARTIFACTS/state.json"
+
+      echo "{\"totalSprints\": $SPRINT_COUNT, \"appDir\": \"$ARTIFACTS/app\", \"artifactsDir\": \"$ARTIFACTS\"}"
+    timeout: 30000
+
+  # Phase 3: Cheap Sprint Loop
+  - id: sprint-cheap
+    depends_on: [init-workspace]
+    idle_timeout: 600000
+    provider: ollama
+    model: qwen2.5-coder:1.5b
+    loop:
+      prompt: |
+        # Brand Forge — Sprint Loop (Cheap Tier)
+
+        You are part of a GAN-inspired adversarial brand forge. Each iteration you play ONE role.
+        The current model tier is "cheap". Work efficiently, but be prepared to escalate if
+        the Critic repeatedly breaks your work.
+
+        ## FIRST: Read State
+        Read `$ARTIFACTS_DIR/state.json` to determine phase, sprint, retry, etc.
+        Then read `$ARTIFACTS_DIR/spec.md` for brand context.
+
+        State fields:
+        - phase — current role (negotiating, building, evaluating)
+        - sprint — current sprint number
+        - totalSprints — total sprints planned
+        - retry — current retry count (0 = first attempt)
+        - maxRetries — 3 for cheap tier
+        - modelTier — "cheap" or "expensive"
+        - passThreshold — minimum score to pass (default 7)
+        - completedSprints — array of passed sprint numbers
+        - status — "running", "complete", "escalated", or "failed"
+
+        ## Directory Layout
+        - App source code: `$ARTIFACTS_DIR/app/`
+        - Sprint contracts: `$ARTIFACTS_DIR/contracts/sprint-{N}.json`
+        - Evaluation feedback: `$ARTIFACTS_DIR/feedback/sprint-{N}-round-{R}.json`
+        - State machine: `$ARTIFACTS_DIR/state.json`
+
+        ---
+
+        ## ROLE: CONTRACT NEGOTIATOR (phase = "negotiating")
+
+        Read the spec carefully. Propose a sprint contract for Sprint {N} with 5-15 specific,
+        testable criteria.
+
+        Each criterion MUST be concrete and verifiable. Examples:
+        - GOOD: "Homepage hero headline matches brand voice guide (use Read to compare)"
+        - GOOD: "Lighthouse accessibility score >= 90; no missing alt text on images"
+        - GOOD: "Privacy policy page exists and covers email collection, analytics, and cookies"
+        - GOOD: "Primary brand color #XXXXXX is applied to all buttons and nav links"
+        - GOOD: "Mobile nav menu collapses at <= 768px and links are tappable (min 44px)"
+        - BAD: "The site looks good"
+        - BAD: "Brand is consistent"
+
+        Step 2 — Critic's Tightening: Review as an adversary. Tighten vague criteria, add edge
+        cases, raise the bar.
+
+        Write contract to `$ARTIFACTS_DIR/contracts/sprint-{N}.json`:
+        ```json
+        {
+          "sprintNumber": <N>,
+          "features": ["feature1", "feature2"],
+          "criteria": [
+            {
+              "name": "short-kebab-name",
+              "description": "Specific, testable description of what must be true",
+              "threshold": 7
+            }
+          ]
+        }
+        ```
+
+        Update state.json: Set `"phase": "building"`. Keep other fields unchanged.
+
+        ---
+
+        ## ROLE: FORGE (phase = "building")
+
+        You are a brand engineer and full-stack developer. Build features that MUST survive the
+        adversarial Critic.
+
+        Read these files:
+        1. `$ARTIFACTS_DIR/spec.md` — full brand spec
+        2. `$ARTIFACTS_DIR/contracts/sprint-{N}.json` — the contract you must satisfy
+        3. If retry > 0: read `$ARTIFACTS_DIR/feedback/sprint-{N}-round-{R-1}.json`
+
+        If this is a RETRY (retry > 0):
+        - Read feedback CAREFULLY. Every failed criterion must be addressed.
+        - If scores 5-6 and trending up: REFINE
+        - If scores 1-4 or fundamentally broken: PIVOT to a new strategy
+        - Address EVERY feedback item
+
+        Build rules:
+        - All code goes in `$ARTIFACTS_DIR/app/`
+        - Build ONE feature at a time, verify, then commit:
+          `cd $ARTIFACTS_DIR/app && git add -A && git commit -m "feat: description"`
+        - Install dependencies as needed
+        - Test your code (start server, verify UI, test endpoints, check responsive)
+        - Build defensively — the Critic's job is to break you
+
+        Update state.json: Set `"phase": "evaluating"`.
+
+        ---
+
+        ## ROLE: CRITIC (phase = "evaluating")
+
+        You are a MULTI-HEADED adversarial QA agent. Your mandate is to BREAK the brand.
+
+        CRITICAL CONSTRAINTS:
+        - READ-ONLY on source code. NEVER use Write or Edit on `$ARTIFACTS_DIR/app/`.
+        - MAY use Bash to run the app, curl endpoints, run tests, check behavior.
+        - MUST kill any background processes BEFORE finishing:
+          `pkill -f "node|bun|python|npm|next|vite|webpack" 2>/dev/null || true`
+        - MUST score EVERY criterion in the contract. No skipping.
+
+        Apply all 5 heads to EVERY criterion:
+
+        1. **Market Critic**: Does positioning match the spec? Is differentiation clear?
+           Any competitor overlap or diluted messaging?
+        2. **Compliance Critic**: GDPR/privacy page, cookie notice, WCAG accessibility,
+           terms of service if collecting data. Missing legally required elements?
+        3. **Technical Critic**: Lighthouse perf/accessibility/SEO >= threshold,
+           responsive breakpoints, no console errors, valid HTML, fast load time.
+        4. **Brand Voice Critic**: Read the voice guide in spec.md. Compare ALL user-facing
+           copy. Inconsistencies, off-tone moments, or generic placeholder copy = failure.
+        5. **Security Critic**: No exposed env vars, no inline scripts that look like XSS,
+           no dependency vulns (run `npm audit` or equivalent).
+
+        Scoring guidelines:
+        - 9-10: Exceptional (exceeds contract, no issues found by any head)
+        - 7-8: Solid (meets contract as stated, minor polish at most)
+        - 5-6: Partial (core function exists but fails edge cases or has bugs)
+        - 3-4: Weak (barely functional, major gaps)
+        - 1-2: Broken (does not work or not implemented)
+
+        Do NOT grade on a curve. A 7 means "genuinely meets the bar."
+
+        Write evaluation to `$ARTIFACTS_DIR/feedback/sprint-{N}-round-{R}.json`:
+        ```json
+        {
+          "passed": true|false,
+          "scores": {
+            "criterion-name": <score>,
+            ...
+          },
+          "headScores": {
+            "market": <avg>,
+            "compliance": <avg>,
+            "technical": <avg>,
+            "voice": <avg>,
+            "security": <avg>
+          },
+          "feedback": [
+            {
+              "criterion": "criterion-name",
+              "score": <1-10>,
+              "details": "Specific findings. File paths, line numbers, exact errors, curl commands that failed."
+            }
+          ],
+          "overallSummary": "What worked, what didn't, what the Forge must fix."
+        }
+        ```
+
+        passed = true ONLY if every single score >= passThreshold.
+
+        Update state.json based on result:
+
+        If PASSED:
+        - Add current sprint to completedSprints
+        - If sprint < totalSprints: phase="negotiating", sprint++, retry=0
+        - If sprint == totalSprints: phase="complete", status="complete"
+
+        If FAILED:
+        - If retry < maxRetries: phase="building", retry++
+        - If retry >= maxRetries: modelTier="expensive", retry=0, phase="negotiating", status="escalated"
+
+        IMPORTANT: Kill all background processes before finishing.
+
+        ---
+
+        ## COMPLETION
+
+        After updating state.json, check status:
+        - `"status": "complete"` → `<promise>ALL_SPRINTS_COMPLETE</promise>`
+        - `"status": "escalated"` → `<promise>ALL_SPRINTS_COMPLETE</promise>`
+        - `"status": "running"` → do NOT output any completion signal.
+      until: ALL_SPRINTS_COMPLETE
+      max_iterations: 60
+      fresh_context: true
+      until_bash: |
+        grep -qE '"status"\s*:\s*"(complete|escalated)"' "$ARTIFACTS_DIR/state.json"
+
+  # Phase 4: Escalation Gate
+  - id: check-escalation
+    depends_on: [sprint-cheap]
+    script: |
+      const fs = require('fs');
+      const state = JSON.parse(fs.readFileSync('$ARTIFACTS_DIR/state.json', 'utf8'));
+      console.log(JSON.stringify({ escalate: state.status === 'escalated' ? 'true' : 'false' }));
+    runtime: bun
+
+  # Phase 5: Expensive Sprint Loop
+  - id: sprint-expensive
+    depends_on: [check-escalation]
+    when: "$check-escalation.output.escalate == 'true'"
+    idle_timeout: 600000
+    provider: ollama
+    model: nemotron-3-super:cloud
+    loop:
+      prompt: |
+        # Brand Forge — Sprint Loop (Expensive Tier)
+
+        You are part of a GAN-inspired adversarial brand forge. You are now on the EXPENSIVE TIER.
+        Be significantly more thorough, creative, and relentless. The cheap model failed here;
+        you must succeed.
+
+        ## FIRST: Read State
+        Read `$ARTIFACTS_DIR/state.json` and `$ARTIFACTS_DIR/spec.md`.
+
+        Also read ALL cheap-tier feedback files in `$ARTIFACTS_DIR/feedback/` to understand
+        exactly what the cheap model could not fix.
+
+        ## Directory Layout
+        - App: `$ARTIFACTS_DIR/app/`
+        - Contracts: `$ARTIFACTS_DIR/contracts/sprint-{N}.json`
+        - Feedback: `$ARTIFACTS_DIR/feedback/sprint-{N}-round-{R}.json`
+        - State: `$ARTIFACTS_DIR/state.json`
+
+        ---
+
+        ## ROLE: CONTRACT NEGOTIATOR (phase = "negotiating")
+
+        Read the spec and ALL previous cheap-tier feedback. Propose a hardened sprint contract.
+        The contract MUST be stricter than the cheap tier's. Add criteria for:
+        - Animation micro-interactions
+        - Social proof placement and trust signals
+        - Conversion funnel integrity
+        - Cross-browser consistency
+
+        Write to `$ARTIFACTS_DIR/contracts/sprint-{N}.json`.
+
+        Update state.json: `"phase": "building"`.
+
+        ---
+
+        ## ROLE: FORGE (phase = "building")
+
+        You are a senior brand engineer on the expensive tier. Rebuild or refine with extreme care.
+        Read cheap-tier feedback thoroughly. Every weakness must be addressed.
+
+        Build rules:
+        - All work in `$ARTIFACTS_DIR/app/`
+        - Commit after each feature
+        - Test thoroughly before moving on
+
+        Update state.json: `"phase": "evaluating"`.
+
+        ---
+
+        ## ROLE: CRITIC (phase = "evaluating")
+
+        You are a RUTHLESS multi-headed adversarial QA agent. You are the final gate before launch.
+
+        CRITICAL: READ-ONLY on source code. Use Bash to run/test. Kill background processes:
+        `pkill -f "node|bun|python|npm|next|vite|webpack" 2>/dev/null || true`
+
+        The 5 heads (Market, Compliance, Technical, Brand Voice, Security) must be applied with
+        EXTREME prejudice. A 7/10 on the expensive tier means "production-ready and delightful."
+
+        Write evaluation to `$ARTIFACTS_DIR/feedback/sprint-{N}-round-{R}.json`.
+
+        Update state.json:
+        - If PASSED: add sprint to completedSprints. If sprint < totalSprints: phase="negotiating", sprint++, retry=0. If sprint == totalSprints: phase="complete", status="complete".
+        - If FAILED and retry < maxRetries: phase="building", retry++.
+        - If FAILED and retry >= maxRetries: phase="failed", status="failed".
+
+        ---
+
+        ## COMPLETION
+
+        After updating state.json:
+        - `"status": "complete"` → `<promise>ALL_SPRINTS_COMPLETE</promise>`
+        - `"status": "failed"` → `<promise>ALL_SPRINTS_COMPLETE</promise>`
+        - `"status": "running"` → do NOT output completion signal.
+      until: ALL_SPRINTS_COMPLETE
+      max_iterations: 60
+      fresh_context: true
+      until_bash: |
+        grep -qE '"status"\s*:\s*"(complete|failed)"' "$ARTIFACTS_DIR/state.json"
+
+  # Phase 6: Launch Report
+  - id: report
+    depends_on: [sprint-cheap, sprint-expensive]
+    trigger_rule: all_done
+    context: fresh
+    provider: ollama
+    model: qwen2.5-coder:1.5b
+    prompt: |
+      You are a launch-readiness reporter. Generate a comprehensive report.
+
+      Read:
+      1. `$ARTIFACTS_DIR/state.json`
+      2. `$ARTIFACTS_DIR/spec.md`
+      3. All files in `$ARTIFACTS_DIR/contracts/`
+      4. All files in `$ARTIFACTS_DIR/feedback/`
+
+      ## Report Sections
+
+      ### Launch Summary
+      - What brand/product was built
+      - Final status: complete, escalated, or failed
+      - Sprints completed vs planned
+      - Which model tier handled which sprints
+
+      ### Per-Sprint Breakdown
+      - Contract requirements
+      - Attempts needed (including cheap vs expensive retries)
+      - Final scores per criterion and per head
+      - Key feedback that drove retries
+
+      ### Quality Metrics
+      - Average score across all final-round criteria
+      - Head-by-head average
+      - Which criteria needed most retries
+      - Cheap vs expensive tier performance delta
+
+      ### Launch Instructions
+      - App location: `$ARTIFACTS_DIR/app/`
+      - Tech stack and startup commands
+      - Any remaining launch blockers
+
+      Write this report to `$ARTIFACTS_DIR/report.md` AND output it directly.
+    allowed_tools: [Read, Write, Glob, Grep]
