@@ -6,6 +6,11 @@ Runs daily at 8:00 AM IST (intended for Task Scheduler / cron).
 Reviews yesterday's log, extracts decisions/lessons/facts, and updates MEMORY.md.
 Archives yesterday's habit checklist in HABITS.md.
 
+Features:
+  - Idempotency: skips if already reflected for a given date
+  - Deduplication: won't add the same item twice to MEMORY.md
+  - LLM retry + fallback for promotion decisions
+
 Usage:
     python .claude/scripts/memory_reflect.py              # normal run
     python .claude/scripts/memory_reflect.py --preview   # show changes, no writes
@@ -24,25 +29,49 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from llm_client import LLMClient  # noqa: E402
+from file_utils import atomic_write, locked_open, safe_load_json  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
 DAILY_DIR = PROJECT_ROOT / "Memory" / "daily"
 MEMORY_MD = PROJECT_ROOT / "Memory" / "MEMORY.md"
 HABITS_MD = PROJECT_ROOT / "Memory" / "HABITS.md"
+STATE_FILE = PROJECT_ROOT / ".claude" / "data" / "state" / "reflect-state.json"
+CONFIG_FILE = PROJECT_ROOT / ".claude" / "config" / "heartbeat.json"
+
+
+def _load_config() -> dict:
+    defaults = {
+        "llm_backend": "auto",
+        "llm_fallback": True,
+    }
+    if CONFIG_FILE.exists():
+        try:
+            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            defaults.update(loaded)
+        except Exception:
+            pass
+    return defaults
 
 
 class MemoryReflect:
     def __init__(self, dry_run: bool = False, use_llm: bool = False):
         self.dry_run = dry_run
+        self.config = _load_config()
         self.use_llm = use_llm
         self.llm: Optional[LLMClient] = None
+        self.errors: list[str] = []
         if use_llm:
             try:
-                self.llm = LLMClient()
+                backend = self.config.get("llm_backend", "auto")
+                self.llm = LLMClient(backend=None if backend == "auto" else backend)
             except RuntimeError as e:
-                print(f"[reflect] LLM not available: {e}", file=sys.stderr)
+                self._error(f"LLM not available: {e}")
                 self.use_llm = False
+
+    def _error(self, msg: str) -> None:
+        self.errors.append(msg)
+        print(f"[reflect] {msg}", file=sys.stderr)
 
     def _load_file(self, path: Path) -> str:
         if path.exists():
@@ -52,7 +81,20 @@ class MemoryReflect:
     def _write_file(self, path: Path, content: str) -> None:
         if self.dry_run:
             return
-        path.write_text(content, encoding="utf-8")
+        atomic_write(path, content)
+
+    def _load_reflect_state(self) -> dict:
+        return safe_load_json(STATE_FILE, default={})
+
+    def _save_reflect_state(self, data: dict) -> None:
+        if self.dry_run:
+            return
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from file_utils import atomic_write_json
+            atomic_write_json(STATE_FILE, data)
+        except Exception as e:
+            self._error(f"Failed to save reflect state: {e}")
 
     # ------------------------------------------------------------------
     # Extraction
@@ -66,7 +108,6 @@ class MemoryReflect:
             "Key Facts": [],
         }
 
-        # Look for explicit tags anywhere in the log
         tag_patterns = {
             "Decisions": r"\*\*Decision:\*\*\s*(.+?)(?=\n|$)",
             "Action Items": r"\*\*Action Item:\*\*\s*(.+?)(?=\n|$)",
@@ -80,12 +121,10 @@ class MemoryReflect:
                 if text and text not in items[category]:
                     items[category].append(text)
 
-        # Also look for ### Category blocks (from shared_extract.py format)
         section_pattern = r"###\s*(Decisions|Action Items|Lessons|Key Facts|Plans|File Changes|Tasks)\n((?:- .+\n)+)"
         for match in re.finditer(section_pattern, log_content, re.IGNORECASE):
             category = match.group(1)
             block = match.group(2)
-            # Map some categories
             if category in ("Plans", "File Changes", "Tasks"):
                 category = "Key Facts"
             if category not in items:
@@ -150,10 +189,13 @@ class MemoryReflect:
             }
         prompt = self._build_promotion_prompt(items, memory_content)
         try:
-            response = self.llm.complete(prompt, max_tokens=1024)
+            if self.config.get("llm_fallback", True):
+                response = self.llm.complete_with_fallback(prompt, max_tokens=1024)
+            else:
+                response = self.llm.complete(prompt, max_tokens=1024)
             return self._parse_promotion_json(response)
         except Exception as e:
-            print(f"[reflect] LLM promotion failed: {e}", file=sys.stderr)
+            self._error(f"LLM promotion failed: {e}")
             return {
                 "promote_decisions": items.get("Decisions", []),
                 "promote_lessons": items.get("Lessons", []),
@@ -164,34 +206,65 @@ class MemoryReflect:
     # ------------------------------------------------------------------
     # MEMORY.md Updates
     # ------------------------------------------------------------------
+    def _normalize_item(self, text: str) -> str:
+        """Normalize for deduplication comparison."""
+        return re.sub(r"[^\w]", "", text.lower())
+
+    def _section_existing_items(self, content: str, section: str) -> set[str]:
+        """Return set of normalized existing items in a section."""
+        existing: set[str] = set()
+        # Find section and extract bullet items until next ##
+        pattern = rf"##\s*{re.escape(section)}\s*\n"
+        match = re.search(pattern, content)
+        if not match:
+            return existing
+        start = match.end()
+        # Find end of section (next ## or end of file)
+        next_header = re.search(r"\n##\s", content[start:])
+        end = start + next_header.start() if next_header else len(content)
+        section_text = content[start:end]
+        for line in section_text.splitlines():
+            stripped = line.strip().lstrip("- ")
+            if stripped:
+                existing.add(self._normalize_item(stripped))
+        return existing
+
     def _append_to_section(self, content: str, section: str, new_lines: list[str]) -> str:
         if not new_lines:
             return content
-        # Find section header like ## Key Decisions
+        existing = self._section_existing_items(content, section)
+        unique_lines = [line for line in new_lines if self._normalize_item(line) not in existing]
+        if not unique_lines:
+            return content
         pattern = rf"(##\s*{re.escape(section)}\s*\n)"
         match = re.search(pattern, content)
         if not match:
             return content
 
         insert_pos = match.end()
-        block = "\n".join(f"- {line}" for line in new_lines) + "\n"
+        block = "\n".join(f"- {line}" for line in unique_lines) + "\n"
         return content[:insert_pos] + block + content[insert_pos:]
 
     def _update_projects_table(self, content: str, updates: dict[str, str]) -> str:
         if not updates:
             return content
-        # Find ## Active Projects table and update matching rows
         for project, status in updates.items():
-            # Simple row replacement heuristic
-            pattern = rf"(\|\s*{re.escape(project)}\s*\|\s*)[^|\n]+"
-            replacement = rf"\1{status}"
-            content = re.sub(pattern, replacement, content, count=1)
+            marker = f"| {project} |"
+            for line in content.splitlines():
+                if marker in line:
+                    parts = line.split("|")
+                    for i, part in enumerate(parts):
+                        if part.strip() == project and i + 1 < len(parts):
+                            parts[i + 1] = f" {status} "
+                            new_line = "|".join(parts)
+                            content = content.replace(line, new_line)
+                            break
         return content
 
     def update_memory(self, promotion: dict[str, Any]) -> None:
         content = self._load_file(MEMORY_MD)
         if not content:
-            print("[reflect] MEMORY.md not found, skipping.", file=sys.stderr)
+            self._error("MEMORY.md not found, skipping.")
             return
 
         content = self._append_to_section(content, "Key Decisions", promotion.get("promote_decisions", []))
@@ -230,7 +303,6 @@ class MemoryReflect:
                 in_pillars = False
             if in_pillars and stripped.startswith("- ["):
                 checked = stripped.startswith("- [x]")
-                # Extract pillar name between **
                 m = re.search(r"\*\*([^*]+)\*\*", stripped)
                 if m:
                     checkboxes.append((m.group(1), checked))
@@ -242,20 +314,16 @@ class MemoryReflect:
             archive_entry += f"- {status} {pillar}\n"
 
         # Insert into History section
-        history_marker = "## History"
-        idx = content.find(history_marker)
-        if idx != -1:
-            insert_pos = idx + len(history_marker)
-            # Skip to end of line
-            while insert_pos < len(content) and content[insert_pos] != "\n":
-                insert_pos += 1
-            insert_pos += 1  # after newline
-            content = content[:insert_pos] + archive_entry + content[insert_pos:]
+        for i, line in enumerate(lines):
+            if line.strip() == "## History":
+                lines.insert(i + 1, archive_entry.strip())
+                break
 
         # Reset checkboxes
         for i, line in enumerate(lines):
             if line.strip().startswith("- [x]"):
                 lines[i] = line.replace("- [x]", "- [ ]", 1)
+
         content = "\n".join(lines) + "\n"
 
         # Update date
@@ -279,6 +347,12 @@ class MemoryReflect:
         yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         daily_file = DAILY_DIR / f"{yesterday}.md"
 
+        # Idempotency check
+        state = self._load_reflect_state()
+        if state.get("last_reflected") == yesterday:
+            print(f"[reflect] Already reflected on {yesterday}. Skipping.")
+            return
+
         print(f"[reflect] Reviewing {daily_file.name}")
 
         if not daily_file.exists():
@@ -295,7 +369,36 @@ class MemoryReflect:
 
         self.update_memory(promotion)
         self.archive_habits(yesterday)
-        print("[reflect] Done.")
+
+        # Cognee consolidation: push promoted items into graph for self-improvement
+        promoted = (
+            promotion.get("promote_decisions", [])
+            + promotion.get("promote_lessons", [])
+            + promotion.get("promote_facts", [])
+        )
+        if promoted:
+            asyncio.run(self._cognee_consolidate(promoted))
+
+        # Save state
+        state["last_reflected"] = yesterday
+        self._save_reflect_state(state)
+
+        if self.errors:
+            print(f"[reflect] Completed with {len(self.errors)} errors.")
+        else:
+            print("[reflect] Done.")
+
+    async def _cognee_consolidate(self, items: list[str]) -> None:
+        """Push promoted items into Cognee graph for self-improvement."""
+        try:
+            from cognee_memory import create_memory
+            mem = create_memory()
+            text = "\n".join(items)
+            await mem.ingest_text(text, source="memory_reflect")
+            await mem.memify()
+            print(f"[reflect] Cognee memify() completed for {len(items)} items.")
+        except Exception as exc:
+            self._error(f"Cognee consolidation failed: {exc}")
 
 
 def main():

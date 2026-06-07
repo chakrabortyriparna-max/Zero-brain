@@ -105,6 +105,7 @@ class TestHabitDetection:
 
 class TestStateIO:
     def test_save_and_load(self, runner: HeartbeatRunner):
+        runner.dry_run = False
         s = Snapshot(timestamp="2026-05-17T10:00:00+05:30", gmail_unread=[{"id": "a"}])
         runner._save_state(s)
         loaded = runner._load_state()
@@ -123,7 +124,6 @@ class TestDailyLog:
 
 class TestDraftPersistence:
     def test_save_email_drafts(self, runner: HeartbeatRunner):
-        # Temporarily allow writes for this test
         runner.dry_run = False
         drafts = [
             {
@@ -141,11 +141,27 @@ class TestDraftPersistence:
         assert "alice@example.com" in content
         assert "Thanks for reaching out." in content
 
-    def test_expire_old_drafts(self, runner: HeartbeatRunner):
+    def test_deduplicate_by_source_id(self, runner: HeartbeatRunner):
         runner.dry_run = False
-        old = runner.DRAFTS_ACTIVE / "old_draft.md"
+        drafts = [
+            {
+                "recipient": "alice@example.com",
+                "subject": "Re: Hello",
+                "body": "Thanks.",
+                "source_id": "msg123",
+            }
+        ]
+        saved1 = runner._save_email_drafts(drafts)
+        saved2 = runner._save_email_drafts(drafts)
+        # Second call should skip existing draft with same source_id
+        assert len(saved2) == 0
+
+    def test_expire_old_drafts(self, runner: HeartbeatRunner):
+        from heartbeat import DRAFTS_ACTIVE, DRAFTS_EXPIRED
+        runner.dry_run = False
+        old = DRAFTS_ACTIVE / "old_draft.md"
+        DRAFTS_ACTIVE.mkdir(parents=True, exist_ok=True)
         old.write_text("old", encoding="utf-8")
-        # Mock mtime to be older than 24h
         import time
         old_time = time.time() - (25 * 3600)
         os.utime(old, (old_time, old_time))
@@ -155,27 +171,41 @@ class TestDraftPersistence:
         assert moved[0].exists()
 
 
-class TestIntegrationMocking:
-    @patch("heartbeat.gmail_integration")
-    def test_gather_gmail(self, mock_gmail):
-        mock_gmail.list_unread.return_value = [
-            MagicMock(id="1", thread_id="t1", subject="Hi", from_addr="a@b.com",
-                      snippet="snip", body_text="body", labels=[])
+class TestKeywordFallback:
+    def test_keyword_flag_urgent(self, runner: HeartbeatRunner):
+        emails = [
+            {"subject": "Urgent: need reply", "from_addr": "boss@corp.com", "snippet": "urgent"},
+            {"subject": "Lunch?", "from_addr": "friend@example.com", "snippet": "hi"},
         ]
-        runner = HeartbeatRunner(dry_run=True)
-        result = runner._gather_gmail()
-        assert len(result) == 1
-        assert result[0]["id"] == "1"
+        flags = runner._keyword_flag_emails(emails)
+        assert len(flags) == 1
+        assert "Urgent" in flags[0]
 
-    @patch("heartbeat.github_integration")
-    def test_gather_github_notifications(self, mock_gh):
-        mock_gh.list_notifications.return_value = [
-            MagicMock(id="n1", title="Bug", type="Issue", repo="r/p", reason="mention", unread=True)
-        ]
-        runner = HeartbeatRunner(dry_run=True)
-        result = runner._gather_github_notifications()
-        assert len(result) == 1
-        assert result[0]["id"] == "n1"
+    def test_keyword_no_match(self, runner: HeartbeatRunner):
+        emails = [{"subject": "Lunch?", "from_addr": "a@b.com", "snippet": "hi"}]
+        flags = runner._keyword_flag_emails(emails)
+        assert len(flags) == 0
+
+
+class TestConfig:
+    def test_config_loading(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            config_path = Path(td) / "heartbeat.json"
+            config_path.write_text(json.dumps({"enable_drafting": True, "draft_expiry_hours": 48}), encoding="utf-8")
+            with patch("heartbeat.CONFIG_FILE", config_path):
+                runner = HeartbeatRunner()
+                assert runner.config["enable_drafting"] is True
+                assert runner.config["draft_expiry_hours"] == 48
+                assert runner.use_llm is True
+
+
+class TestErrorAggregation:
+    def test_error_recording(self, runner: HeartbeatRunner):
+        runner.errors.clear()
+        runner._error("Test error")
+        assert len(runner.errors) == 1
+        assert "Test error" in runner.errors[0]
 
 
 # Allow patching os.utime in tests

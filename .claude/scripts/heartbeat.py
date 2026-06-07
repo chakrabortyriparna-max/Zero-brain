@@ -28,10 +28,21 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from llm_client import LLMClient  # noqa: E402
+from file_utils import atomic_write, locked_open, safe_load_json  # noqa: E402
+
+# Lazy Cognee imports — optional graph recall
+try:
+    from cognee_memory import CogneeMemory
+    from cognee.modules.search.types import SearchType
+except Exception:
+    CogneeMemory = None  # type: ignore[misc]
+    SearchType = None  # type: ignore[misc]
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
 STATE_FILE = PROJECT_ROOT / ".claude" / "data" / "state" / "heartbeat-state.json"
+CONFIG_FILE = PROJECT_ROOT / ".claude" / "config" / "heartbeat.json"
+DARK_FACTORY_STATE_DB = PROJECT_ROOT / ".claude" / "dark-factory" / "state.db"
 DAILY_DIR = PROJECT_ROOT / "Memory" / "daily"
 DRAFTS_ACTIVE = PROJECT_ROOT / "Memory" / "drafts" / "active"
 DRAFTS_EXPIRED = PROJECT_ROOT / "Memory" / "drafts" / "expired"
@@ -41,10 +52,7 @@ HABITS_MD = PROJECT_ROOT / "Memory" / "HABITS.md"
 
 # Configurable via USER.md or env
 SLACK_USER_ID = os.environ.get("SLACK_USER_ID", "")
-GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME", "")
 GITHUB_MAIN_REPO = os.environ.get("GITHUB_MAIN_REPO", "")
-
-DRAFT_EXPIRY_HOURS = 24
 
 
 @dataclass
@@ -79,22 +87,62 @@ class Snapshot:
         )
 
 
+def _load_config() -> dict:
+    """Load heartbeat configuration from JSON file."""
+    defaults = {
+        "enable_drafting": False,
+        "llm_backend": "auto",
+        "llm_fallback": True,
+        "draft_expiry_hours": 24,
+        "keyword_flags": ["urgent", "deadline", "asap", "action required", "please reply"],
+        "integrations": {"gmail": {"enabled": True, "max_results": 20},
+                        "github": {"enabled": True, "commit_limit": 20},
+                        "slack": {"enabled": True, "message_limit": 50}},
+        "habits": {"auto_detect_main_project": True, "auto_detect_community": True},
+        "notifications": {"enabled": False, "urgent_only": True},
+    }
+    if CONFIG_FILE.exists():
+        try:
+            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            defaults.update(loaded)
+        except Exception as e:
+            print(f"[heartbeat] Failed to load config: {e}", file=sys.stderr)
+    return defaults
+
+
 class HeartbeatRunner:
     def __init__(self, dry_run: bool = False, use_llm: bool = False, notify: bool = False):
         self.dry_run = dry_run
-        self.use_llm = use_llm
-        self.notify = notify
+        self.config = _load_config()
+        # CLI flag overrides config; if neither set, default to False
+        self.use_llm = use_llm if use_llm else self.config.get("enable_drafting", False)
+        self.notify = notify if notify else self.config.get("notifications", {}).get("enabled", False)
         self.llm: Optional[LLMClient] = None
-        if use_llm:
+        self.errors: list[str] = []
+        self.use_cognee = True
+        self._cognee: Optional[Any] = None
+        if CogneeMemory is not None:
             try:
-                self.llm = LLMClient()
+                self._cognee = CogneeMemory.create()
+            except Exception as e:
+                self._error(f"Cognee init failed: {e}")
+                self.use_cognee = False
+        if self.use_llm:
+            try:
+                backend = self.config.get("llm_backend", "auto")
+                self.llm = LLMClient(backend=None if backend == "auto" else backend)
             except RuntimeError as e:
-                print(f"[heartbeat] LLM not available: {e}", file=sys.stderr)
+                self._error(f"LLM not available: {e}")
                 self.use_llm = False
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _error(self, msg: str) -> None:
+        """Record an error for aggregation."""
+        self.errors.append(msg)
+        print(f"[heartbeat] {msg}", file=sys.stderr)
+
     def _ensure_dirs(self) -> None:
         DAILY_DIR.mkdir(parents=True, exist_ok=True)
         DRAFTS_ACTIVE.mkdir(parents=True, exist_ok=True)
@@ -106,8 +154,8 @@ class HeartbeatRunner:
             try:
                 data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 return Snapshot.from_dict(data)
-            except Exception:
-                pass
+            except Exception as e:
+                self._error(f"State file corrupt: {e}")
         # Empty baseline
         return Snapshot(timestamp="", gmail_unread=[], github_notifications=[], slack_activity={}, github_commits={})
 
@@ -115,11 +163,13 @@ class HeartbeatRunner:
         if self.dry_run:
             return
         try:
-            STATE_FILE.write_text(json.dumps(snapshot.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+            from file_utils import atomic_write_json
+            atomic_write_json(STATE_FILE, snapshot.to_dict())
         except Exception as e:
-            print(f"[heartbeat] Failed to save state: {e}", file=sys.stderr)
+            self._error(f"Failed to save state: {e}")
 
     def _ensure_daily_file(self, date_str: str) -> Path:
+        DAILY_DIR.mkdir(parents=True, exist_ok=True)
         daily_file = DAILY_DIR / f"{date_str}.md"
         if not daily_file.exists():
             header = (
@@ -141,12 +191,77 @@ class HeartbeatRunner:
         return re.sub(r"[^\w\-]", "_", text.lower().strip())[:40]
 
     # ------------------------------------------------------------------
+    # Dark Factory Health
+    # ------------------------------------------------------------------
+    def _gather_dark_factory(self) -> dict[str, Any]:
+        """Poll the Dark Factory state DB for orchestrator health."""
+        status: dict[str, Any] = {
+            "enabled": False,
+            "state_db_exists": DARK_FACTORY_STATE_DB.exists(),
+            "last_run": None,
+            "last_run_ago_minutes": None,
+            "repos_configured": 0,
+            "issues_open": 0,
+            "prs_open": 0,
+            "healthy": False,
+        }
+        if not DARK_FACTORY_STATE_DB.exists():
+            return status
+        status["enabled"] = True
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(DARK_FACTORY_STATE_DB))
+            conn.row_factory = sqlite3.Row
+            # last run
+            row = conn.execute(
+                "SELECT timestamp FROM runs ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                status["last_run"] = row["started_at"]
+                try:
+                    last_dt = datetime.fromisoformat(row["started_at"])
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=IST)
+                    ago = (datetime.now(IST) - last_dt).total_seconds() / 60
+                    status["last_run_ago_minutes"] = round(ago, 1)
+                except Exception:
+                    pass
+            # repos
+            repo_row = conn.execute(
+                "SELECT COUNT(DISTINCT repo_owner || '/' || repo_name) FROM tracked_issues"
+            ).fetchone()
+            status["repos_configured"] = repo_row[0] if repo_row else 0
+            # open issues
+            issue_row = conn.execute(
+                "SELECT COUNT(*) FROM tracked_issues WHERE current_status = 'dispatched'"
+            ).fetchone()
+            status["issues_open"] = issue_row[0] if issue_row else 0
+            # open PRs
+            pr_row = conn.execute(
+                "SELECT COUNT(*) FROM tracked_prs WHERE current_status = 'dispatched'"
+            ).fetchone()
+            status["prs_open"] = pr_row[0] if pr_row else 0
+            conn.close()
+        except Exception as e:
+            self._error(f"Dark Factory health query failed: {e}")
+            return status
+        # healthy if ran in last 2 hours (4x default 30-min interval)
+        status["healthy"] = (
+            status["last_run_ago_minutes"] is not None
+            and status["last_run_ago_minutes"] < 120
+        )
+        return status
+
+    # ------------------------------------------------------------------
     # Gather Phase
     # ------------------------------------------------------------------
     def _gather_gmail(self) -> list[dict]:
+        if not self.config.get("integrations", {}).get("gmail", {}).get("enabled", True):
+            return []
+        max_results = self.config.get("integrations", {}).get("gmail", {}).get("max_results", 20)
         try:
             from integrations import gmail_integration as gmail
-            msgs = gmail.list_unread(max_results=20)
+            msgs = gmail.list_unread(max_results=max_results)
             return [
                 {
                     "id": m.id,
@@ -159,10 +274,12 @@ class HeartbeatRunner:
                 for m in msgs
             ]
         except Exception as e:
-            print(f"[heartbeat] Gmail gather failed: {e}", file=sys.stderr)
+            self._error(f"Gmail gather failed: {e}")
             return []
 
     def _gather_github_notifications(self) -> list[dict]:
+        if not self.config.get("integrations", {}).get("github", {}).get("enabled", True):
+            return []
         try:
             from integrations import github_integration as gh
             notifs = gh.list_notifications()
@@ -178,16 +295,17 @@ class HeartbeatRunner:
                 for n in notifs
             ]
         except Exception as e:
-            print(f"[heartbeat] GitHub gather failed: {e}", file=sys.stderr)
+            self._error(f"GitHub gather failed: {e}")
             return []
 
     def _gather_github_commits(self, repo_name: Optional[str] = None) -> dict[str, list[dict]]:
         repo = repo_name or GITHUB_MAIN_REPO
         if not repo:
             return {}
+        limit = self.config.get("integrations", {}).get("github", {}).get("commit_limit", 20)
         try:
             from integrations import github_integration as gh
-            commits = gh.list_commits(repo, limit=20)
+            commits = gh.list_commits(repo, limit=limit)
             return {
                 repo: [
                     {"sha": c.sha, "message": c.message, "author": c.author, "date": c.date}
@@ -195,15 +313,17 @@ class HeartbeatRunner:
                 ]
             }
         except Exception as e:
-            print(f"[heartbeat] GitHub commits gather failed: {e}", file=sys.stderr)
+            self._error(f"GitHub commits gather failed: {e}")
             return {}
 
     def _gather_slack_activity(self) -> dict[str, list[dict]]:
+        if not self.config.get("integrations", {}).get("slack", {}).get("enabled", True):
+            return {}
+        limit = self.config.get("integrations", {}).get("slack", {}).get("message_limit", 50)
         try:
             from integrations import slack_integration as slack
             channels = slack.list_channels()
             out: dict[str, list[dict]] = {}
-            # Load previous timestamp per channel from state
             previous = self._load_state()
             prev_slack = previous.slack_activity if previous else {}
 
@@ -213,7 +333,7 @@ class HeartbeatRunner:
                 oldest = None
                 if ch.name in prev_slack and prev_slack[ch.name]:
                     oldest = prev_slack[ch.name][-1]["ts"]
-                msgs = slack.get_history(ch.id, oldest_ts=oldest, limit=50)
+                msgs = slack.get_history(ch.id, oldest_ts=oldest, limit=limit)
                 if msgs:
                     out[ch.name] = [
                         {"ts": m.ts, "user": m.user, "text": m.text[:400]}
@@ -221,7 +341,7 @@ class HeartbeatRunner:
                     ]
             return out
         except Exception as e:
-            print(f"[heartbeat] Slack gather failed: {e}", file=sys.stderr)
+            self._error(f"Slack gather failed: {e}")
             return {}
 
     def build_snapshot(self) -> Snapshot:
@@ -269,29 +389,29 @@ class HeartbeatRunner:
         status: dict[str, bool] = {}
         today = datetime.now(IST).strftime("%Y-%m-%d")
 
-        # Main Project: any GitHub commit today?
-        main_project = False
-        for repo, commits in snapshot.github_commits.items():
-            for c in commits:
-                date_str = c.get("date", "")[:10]
-                if date_str == today:
-                    main_project = True
+        if self.config.get("habits", {}).get("auto_detect_main_project", True):
+            main_project = False
+            for repo, commits in snapshot.github_commits.items():
+                for c in commits:
+                    date_str = c.get("date", "")[:10]
+                    if date_str == today:
+                        main_project = True
+                        break
+                if main_project:
                     break
-            if main_project:
-                break
-        status["Main Project"] = main_project
+            status["Main Project"] = main_project
 
-        # Community: any Slack message from Riparna in public channels?
-        community = False
-        slack_user = SLACK_USER_ID or ""
-        for ch, msgs in snapshot.slack_activity.items():
-            for m in msgs:
-                if slack_user and m.get("user") == slack_user:
-                    community = True
+        if self.config.get("habits", {}).get("auto_detect_community", True):
+            community = False
+            slack_user = SLACK_USER_ID or ""
+            for ch, msgs in snapshot.slack_activity.items():
+                for m in msgs:
+                    if slack_user and m.get("user") == slack_user:
+                        community = True
+                        break
+                if community:
                     break
-            if community:
-                break
-        status["Community"] = community
+            status["Community"] = community
 
         return status
 
@@ -316,7 +436,7 @@ class HeartbeatRunner:
     # ------------------------------------------------------------------
     # Draft Phase
     # ------------------------------------------------------------------
-    def _build_llm_prompt(self, diff: dict, soul: str, user: str) -> str:
+    def _build_llm_prompt(self, diff: dict, soul: str, user: str, cognee_context: Optional[str] = None) -> str:
         parts = [
             "You are Riparna's Second Brain heartbeat. "
             "You monitor her external accounts and identify items needing attention. "
@@ -325,8 +445,10 @@ class HeartbeatRunner:
             "\n## Personality and Rules",
             soul[:800],
             user[:400],
-            "\n## New Unread Emails",
         ]
+        if cognee_context:
+            parts.append(cognee_context)
+        parts.append("\n## New Unread Emails")
         if diff["new_gmail"]:
             for m in diff["new_gmail"]:
                 parts.append(f"- From: {m['from_addr']} | Subject: {m['subject']}")
@@ -379,24 +501,76 @@ class HeartbeatRunner:
                 "github_flags": [],
             }
 
+    def _fetch_cognee_context(self, diff: dict) -> Optional[str]:
+        """Query Cognee graph for cross-entity context. Falls back silently."""
+        if not self.use_cognee or self._cognee is None or SearchType is None:
+            return None
+
+        parts: list[str] = []
+        if diff.get("new_gmail"):
+            senders = {m.get("from_addr", "") for m in diff["new_gmail"]}
+            subjects = {m.get("subject", "") for m in diff["new_gmail"]}
+            parts.append(f"Recent emails from {', '.join(senders)} about {'; '.join(subjects)}")
+        if diff.get("new_github"):
+            repos = {n.get("repo", "") for n in diff["new_github"]}
+            parts.append(f"GitHub activity in {', '.join(repos)}")
+        if diff.get("new_slack"):
+            channels = list(diff["new_slack"].keys())
+            parts.append(f"Slack channels: {', '.join(channels)}")
+
+        if not parts:
+            return None
+
+        query = "What relationships connect: " + "; ".join(parts)
+        try:
+            results = asyncio.get_event_loop().run_until_complete(
+                self._cognee.search(query, SearchType.GRAPH_COMPLETION, top_k=5)
+            )
+            if not results:
+                return None
+            lines = "\n".join(f"- {r}" for r in results)
+            return f"## Cross-Entity Context (Cognee Graph Recall)\n{lines}\n"
+        except Exception as e:
+            self._error(f"Cognee recall failed: {e}")
+            return None
+
+    def _keyword_flag_emails(self, emails: list[dict]) -> list[str]:
+        """Fallback: flag emails with urgent keywords when LLM is unavailable."""
+        flags: list[str] = []
+        keywords = [k.lower() for k in self.config.get("keyword_flags", [])]
+        for m in emails:
+            subject = m.get("subject", "").lower()
+            snippet = m.get("snippet", "").lower()
+            for kw in keywords:
+                if kw in subject or kw in snippet:
+                    flags.append(f"[Keyword: {kw}] {m['subject']} from {m['from_addr']}")
+                    break
+        return flags
+
     def generate_drafts(self, diff: dict) -> dict:
         if not self.use_llm or not self.llm:
             return {
-                "attention_items": [],
+                "attention_items": self._keyword_flag_emails(diff.get("new_gmail", [])),
                 "email_drafts": [],
                 "slack_summary": "",
                 "github_flags": [],
             }
         soul = self._load_markdown(SOUL_MD)
         user = self._load_markdown(USER_MD)
-        prompt = self._build_llm_prompt(diff, soul, user)
+        cognee_ctx = None
+        if self.use_cognee:
+            cognee_ctx = self._fetch_cognee_context(diff)
+        prompt = self._build_llm_prompt(diff, soul, user, cognee_ctx)
         try:
-            response = self.llm.complete(prompt, max_tokens=2048)
+            if self.config.get("llm_fallback", True):
+                response = self.llm.complete_with_fallback(prompt, max_tokens=2048)
+            else:
+                response = self.llm.complete(prompt, max_tokens=2048)
             return self._parse_draft_json(response)
         except Exception as e:
-            print(f"[heartbeat] LLM draft generation failed: {e}", file=sys.stderr)
+            self._error(f"LLM draft generation failed: {e}")
             return {
-                "attention_items": [],
+                "attention_items": self._keyword_flag_emails(diff.get("new_gmail", [])),
                 "email_drafts": [],
                 "slack_summary": "",
                 "github_flags": [],
@@ -405,22 +579,40 @@ class HeartbeatRunner:
     # ------------------------------------------------------------------
     # Draft Persistence
     # ------------------------------------------------------------------
+    def _draft_exists(self, source_id: str, slug: str) -> bool:
+        """Check if a draft with the same source_id already exists."""
+        if not source_id:
+            return False
+        for existing in DRAFTS_ACTIVE.glob(f"*_{slug}.md"):
+            try:
+                content = existing.read_text(encoding="utf-8")
+                if f"source_id: {source_id}" in content:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _save_email_drafts(self, drafts: list[dict]) -> list[Path]:
         saved: list[Path] = []
         if self.dry_run:
             return saved
+        DRAFTS_ACTIVE.mkdir(parents=True, exist_ok=True)
         now = datetime.now(IST)
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M")
         for d in drafts:
             slug = self._slugify(d.get("subject", "draft"))
+            source_id = d.get("source_id", "")
+            # Deduplicate: skip if a draft with same source_id already exists
+            if self._draft_exists(source_id, slug):
+                continue
             filename = f"{date_str}_{time_str}_email_{slug}.md"
             filepath = DRAFTS_ACTIVE / filename
             body = d.get("body", "")
             frontmatter = (
                 f"---\n"
                 f"type: email\n"
-                f"source_id: {d.get('source_id', '')}\n"
+                f"source_id: {source_id}\n"
                 f"recipient: {d.get('recipient', '')}\n"
                 f"subject: {d.get('subject', '')}\n"
                 f"context: heartbeat draft\n"
@@ -434,22 +626,34 @@ class HeartbeatRunner:
         return saved
 
     def _expire_old_drafts(self) -> list[Path]:
-        """Move drafts older than DRAFT_EXPIRY_HOURS from active to expired."""
+        """Move drafts older than configured hours from active to expired."""
         moved: list[Path] = []
         if self.dry_run:
             return moved
+        DRAFTS_EXPIRED.mkdir(parents=True, exist_ok=True)
+        expiry_hours = self.config.get("draft_expiry_hours", 24)
         now = datetime.now(IST)
-        cutoff = now - timedelta(hours=DRAFT_EXPIRY_HOURS)
+        cutoff = now - timedelta(hours=expiry_hours)
         for draft in DRAFTS_ACTIVE.glob("*.md"):
-            # Use filename prefix YYYY-MM-DD or file mtime
             try:
+                # Prefer filename-based date check
+                name = draft.stem
+                date_match = re.match(r"(\d{4}-\d{2}-\d{2})_", name)
+                if date_match:
+                    draft_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").replace(tzinfo=IST)
+                    if draft_date < cutoff:
+                        dest = DRAFTS_EXPIRED / draft.name
+                        draft.rename(dest)
+                        moved.append(dest)
+                        continue
+                # Fallback to mtime
                 mtime = datetime.fromtimestamp(draft.stat().st_mtime, tz=IST)
                 if mtime < cutoff:
                     dest = DRAFTS_EXPIRED / draft.name
                     draft.rename(dest)
                     moved.append(dest)
-            except Exception:
-                pass
+            except Exception as e:
+                self._error(f"Draft expiry error for {draft.name}: {e}")
         return moved
 
     # ------------------------------------------------------------------
@@ -510,7 +714,23 @@ class HeartbeatRunner:
             for d in drafts["email_drafts"]:
                 lines.append(f"- Draft: *{d.get('subject', '')}* → `Memory/drafts/active/`\n")
 
-        with open(daily_file, "a", encoding="utf-8") as f:
+        # Dark Factory status
+        df = self._gather_dark_factory()
+        if df["enabled"]:
+            lines.append("\n### Dark Factory\n")
+            health_emoji = "✅" if df["healthy"] else "⚠️"
+            lines.append(
+                f"- {health_emoji} Last run: {df.get('last_run_ago_minutes', '?')} min ago | "
+                f"Repos: {df['repos_configured']} | "
+                f"Issues: {df['issues_open']} | PRs: {df['prs_open']}\n"
+            )
+
+        if self.errors:
+            lines.append("\n### Errors\n")
+            for err in self.errors:
+                lines.append(f"- ⚠️ {err}\n")
+
+        with locked_open(daily_file, "a", lock_mode="write") as f:
             f.write("".join(lines))
 
     # ------------------------------------------------------------------
@@ -520,7 +740,6 @@ class HeartbeatRunner:
         if self.dry_run or not self.notify:
             print(f"[notification] {title}: {message}")
             return
-        # Windows toast via PowerShell
         try:
             escaped_msg = message.replace('"', '`"').replace("'", "`'")
             escaped_title = title.replace('"', '`"').replace("'", "`'")
@@ -531,6 +750,34 @@ class HeartbeatRunner:
             subprocess.run(["powershell.exe", "-Command", ps], capture_output=True, timeout=5)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Health Check
+    # ------------------------------------------------------------------
+    def health(self) -> dict:
+        """Return JSON-serializable health status."""
+        from integrations import registry as reg
+        status: dict[str, Any] = {
+            "timestamp": datetime.now(IST).isoformat(),
+            "integrations": {},
+            "llm": {"available": False, "backend": None},
+            "cognee_recall": {"enabled": self.use_cognee, "available": bool(CogneeMemory)},
+            "dark_factory": self._gather_dark_factory(),
+            "state_file_exists": STATE_FILE.exists(),
+            "drafts_active_count": len(list(DRAFTS_ACTIVE.glob("*.md"))),
+            "drafts_expired_count": len(list(DRAFTS_EXPIRED.glob("*.md"))),
+            "errors_in_session": len(self.errors),
+        }
+        for name, enabled in reg.list_integrations():
+            status["integrations"][name] = {"enabled": enabled}
+        if self.llm:
+            h = self.llm.health()
+            status["llm"] = {
+                "available": True,
+                "backend": h.get("backend"),
+                "model": h.get("model"),
+            }
+        return status
 
     # ------------------------------------------------------------------
     # Main Run
@@ -555,7 +802,6 @@ class HeartbeatRunner:
 
         if not diff["has_changes"] and not force:
             print("[heartbeat] No changes detected. Exiting.")
-            # Still save state for timestamp update
             self._save_state(current)
             return
 
@@ -563,7 +809,7 @@ class HeartbeatRunner:
         habits = self.detect_habits(current)
         print(f"[heartbeat] Habits: {habits}")
 
-        # Drafts (optional LLM)
+        # Drafts (optional LLM with keyword fallback)
         drafts = self.generate_drafts(diff)
         saved_drafts = self._save_email_drafts(drafts.get("email_drafts", []))
         if saved_drafts:
@@ -576,6 +822,28 @@ class HeartbeatRunner:
 
         # Log
         self._append_to_daily_log(diff, drafts, habits)
+
+        # Push to Cognee
+        if self._cognee is not None:
+            try:
+                import asyncio
+                lines = [
+                    f"## Heartbeat — {datetime.now(IST).strftime('%H:%M IST')}",
+                    f"- **Emails:** {len(diff['new_gmail'])} new unread",
+                    f"- **GitHub:** {len(diff['new_github'])} new notifications",
+                    f"- **Slack:** {sum(len(v) for v in diff['new_slack'].values())} new messages",
+                ]
+                if drafts.get("attention_items"):
+                    lines.append("### Attention Items")
+                    for item in drafts["attention_items"]:
+                        lines.append(f"- {item}")
+                cognee_block = "\n".join(lines)
+                asyncio.get_event_loop().run_until_complete(
+                    self._cognee.ingest_text(cognee_block, source="heartbeat")
+                )
+            except Exception as e:
+                self._error(f"Cognee heartbeat ingest failed: {e}")
+
         self._update_habits_file(habits)
 
         # Notify for urgent items
@@ -589,7 +857,12 @@ class HeartbeatRunner:
         # Save state
         current.habits_status = habits
         self._save_state(current)
-        print("[heartbeat] Run complete.")
+
+        # Summary
+        if self.errors:
+            print(f"[heartbeat] Completed with {len(self.errors)} errors.")
+        else:
+            print("[heartbeat] Run complete.")
 
 
 def main():
@@ -598,9 +871,10 @@ def main():
 
     parser = argparse.ArgumentParser(description="Second Brain Heartbeat")
     parser.add_argument("--dry-run", action="store_true", help="Gather only, no writes")
-    parser.add_argument("--llm", action="store_true", help="Enable LLM drafting")
+    parser.add_argument("--llm", action="store_true", help="Enable LLM drafting (overrides config)")
     parser.add_argument("--force", action="store_true", help="Run even if no changes")
     parser.add_argument("--notify", action="store_true", help="Send Windows toast notifications")
+    parser.add_argument("--health", action="store_true", help="Print JSON health status and exit")
     args = parser.parse_args()
 
     runner = HeartbeatRunner(
@@ -608,6 +882,11 @@ def main():
         use_llm=args.llm,
         notify=args.notify,
     )
+
+    if args.health:
+        print(json.dumps(runner.health(), indent=2, ensure_ascii=False))
+        return
+
     runner.run(force=args.force)
 
 
