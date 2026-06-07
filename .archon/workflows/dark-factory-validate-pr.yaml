@@ -104,6 +104,10 @@ nodes:
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
       # Cap at 3000 lines — FACTORY_RULES.md §3 already caps PRs at 500 lines
       # changed; the 3000-line cap here is a defense against accidental huge diffs.
+      # On Windows/Git Bash, `head -N` closing the pipe early can kill gh with
+      # SIGPIPE / "The pipe is being closed". Disable pipefail so the node
+      # survives a truncated read and still exits 0.
+      set +o pipefail
       gh pr diff "$PR_NUMBER" | head -3000
     depends_on: [fetch-pr]
     timeout: 20000
@@ -112,9 +116,12 @@ nodes:
     bash: |
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
+      # grep exits 1 on no match; under set -e that kills the pipeline.
+      # || true ensures the script survives when the PR body contains no
+      # "Fixes #N" / "Closes #N" / "Resolves #N" line.
       ISSUE_NUM=$(gh pr view "$PR_NUMBER" --json body -q '.body' \
         | grep -oiE '(fixes|closes|resolves) #[0-9]+' \
-        | grep -oE '[0-9]+' | head -1)
+        | grep -oE '[0-9]+' | head -1 || true)
       if [ -n "$ISSUE_NUM" ]; then
         # HOLDOUT: title + body + labels only. NO comments.
         gh issue view "$ISSUE_NUM" --json number,title,body,labels,state,url
@@ -213,8 +220,19 @@ nodes:
         git worktree prune
       fi
 
-      gh pr checkout "$PR_NUMBER"
-      echo "Checked out PR #$PR_NUMBER on branch $(git branch --show-current)"
+      # If the current branch is already the PR branch, `gh pr checkout` is
+      # redundant and on Windows it fails with
+      #   fatal: 'X' is already used by worktree at '...'
+      # because Git refuses to have the same branch checked out in two
+      # worktrees. Skip the checkout in that case and proceed straight to
+      # the infra overlay from origin/main.
+      CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+      if [ "$CURRENT_BRANCH" = "$PR_BRANCH" ]; then
+        echo "Already on PR branch '$PR_BRANCH' — skipping gh pr checkout"
+      else
+        gh pr checkout "$PR_NUMBER"
+        echo "Checked out PR #$PR_NUMBER on branch $(git branch --show-current)"
+      fi
       # Pull infra-only files from origin/main into the worktree so the
       # validator always uses the latest workflow command files and skills,
       # regardless of how stale the PR branch is. We deliberately do NOT
