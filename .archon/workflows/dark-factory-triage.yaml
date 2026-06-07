@@ -8,8 +8,8 @@ description: |
            verdicts only -- accept or reject. Ambiguous issues are rejected with an
            explanation; the human can reopen with more context if they disagree.
 
-provider: claude
-model: sonnet
+provider: ollama
+model: nemotron-3-ultra:cloud
 
 nodes:
   # --- Layer 0: parallel context gathering (no AI) ---
@@ -121,7 +121,7 @@ nodes:
   - id: classify
     command: dark-factory-triage-classify
     depends_on: [fetch-issues, fetch-rules, fetch-open-prs]
-    model: sonnet
+    model: nemotron-3-ultra:cloud
     allowed_tools: [Write]
 
   # --- Layer 2: apply decisions deterministically ---

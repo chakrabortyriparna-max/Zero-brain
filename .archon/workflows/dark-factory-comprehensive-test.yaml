@@ -34,8 +34,8 @@ description: |
   Testing). Locally, `npm i -g agent-browser && agent-browser install`.
   See the `.claude/skills/agent-browser/SKILL.md` skill for CLI reference.
 
-provider: claude
-model: sonnet
+provider: ollama
+model: nemotron-3-ultra:cloud
 
 nodes:
   # =====================================================================

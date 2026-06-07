@@ -59,8 +59,8 @@ description: |
   falls back to basic health checks and static validation. See the
   `.claude/skills/agent-browser/SKILL.md` skill for CLI reference.
 
-provider: claude
-model: sonnet
+provider: ollama
+model: nemotron-3-ultra:cloud
 
 nodes:
   # ═══════════════════════════════════════════════════════════════
@@ -1265,7 +1265,7 @@ nodes:
       $synthesize-verdict-pass-2.output
       __P2_VERDICT_EOF__
       for vf in "$ARTIFACTS_DIR/p1-verdict.json" "$ARTIFACTS_DIR/p2-verdict.json"; do
-        [ -f "$vf" ] && python3 -c "import sys,pathlib;p=pathlib.Path(sys.argv[1]);t=p.read_text().strip();t=t.strip(chr(39));t=t.replace(chr(39)+chr(92)+chr(39)+chr(39),chr(39));p.write_text(t)" "$vf"
+        [ -f "$vf" ] && python -c "import sys,pathlib;p=pathlib.Path(sys.argv[1]);t=p.read_text().strip();t=t.strip(chr(39));t=t.replace(chr(39)+chr(92)+chr(39)+chr(39),chr(39));p.write_text(t)" "$vf"
       done
 
       # Pick the authoritative verdict. If pass-2 ran (i.e., fix happened),
