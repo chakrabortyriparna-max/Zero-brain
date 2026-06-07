@@ -64,8 +64,8 @@ $fetch-base-governance.output
 
 Pass-2 runs after a fix cycle. The app is already running from Phase 2 and uvicorn/vite hot-reload should have picked up the fix, so start-app is NOT re-run here. That means we check app health through the reviewer outputs instead of a `start-app.output` marker.
 
-- `$behavioral-e2e-p2.output.app_booted` must be `true`. If `false`, the agent-browser reviewer observed the app was not accepting requests and the mandatory end-to-end regression could not run.
-- `$behavioral-e2e-p2.output` must not be empty. An empty output here means the node was skipped because its upstream dependency (fix-issues) failed.
+- `app_booted` inside the behavioral-e2e-p2 output must be `true`. If `false`, the agent-browser reviewer observed the app was not accepting requests and the mandatory end-to-end regression could not run.
+- The behavioral-e2e-p2 output must not be empty. An empty output here means the node was skipped because its upstream dependency (fix-issues) failed.
 - Any of `$static-checks-backend-p2.output`, `$static-checks-frontend-p2.output`, `$run-tests-backend-p2.output`, `$run-tests-frontend-p2.output` being empty (no content at all — meaning the node was skipped because its upstream failed) is also an infrastructure failure.
 
 **FORBIDDEN escape hatch — read carefully.** `not_e2e_testable` is a legitimate enum value when the *diff* legitimately cannot be exercised through the browser (pure internal refactor, docs-only change, background-job tweak with no UI surface). It does NOT mean "the E2E node didn't produce output" or "the app crashed during the fix." If `behavioral-e2e-p2.app_booted` is `false`, or `$behavioral-e2e-p2.output` is empty, you are **FORBIDDEN** from returning `e2e_status: "not_e2e_testable"` or `behavioral_status: "not_e2e_testable"`. Those are infrastructure failures and you MUST fire rule 0 with `e2e_status: "no"` and `behavioral_status: "no"`.
@@ -140,8 +140,8 @@ Return structured JSON matching the schema enforced by the workflow node:
 - `summary`: one or two sentence plain-English verdict statement (what happened and why)
 - `static_checks_status`: `"pass" | "fail"` — aggregated across all four backend + frontend checks
 - `tests_status`: `"pass" | "fail" | "skipped"`
-- `behavioral_status`: copy of `$behavioral-validation-p2.output.solves_issue`
-- `security_status`: copy of `$security-check-p2.output.verdict`
+- `behavioral_status`: copy the `solves_issue` field from the behavioral validation output above
+- `security_status`: copy the `verdict` field from the security check output above
 - `issues_to_fix`: array of objects, each with:
   - `category`: `"behavioral" | "test_failure" | "static_check" | "code_quality" | "security" | "scope"`
   - `severity`: `"critical" | "high" | "medium" | "low"`

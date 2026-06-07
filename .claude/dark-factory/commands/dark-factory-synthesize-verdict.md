@@ -59,6 +59,12 @@ $security-check-p1.output
 ### Code Review
 $code-review-p1.output
 
+---
+
+## Handling Skipped or Empty Reviewer Outputs
+
+If any of the four reviewer outputs above is empty or missing, that means the reviewer node was **skipped** because its upstream dependency failed (e.g., `checkout-pr` or `start-app` crashed). This is an **infrastructure failure**, not a missing test. Apply **Rule 0** below immediately — do not evaluate the other rules.
+
 ### Governance Files (base branch copy — use for context only)
 $fetch-base-governance.output
 
@@ -147,8 +153,8 @@ Return structured JSON matching the schema enforced by the workflow node:
 - `summary`: one or two sentence plain-English verdict statement (what happened and why)
 - `static_checks_status`: `"pass" | "fail"` — aggregated across all four backend + frontend checks
 - `tests_status`: `"pass" | "fail" | "skipped"`
-- `behavioral_status`: copy of `$behavioral-validation-p1.output.solves_issue`
-- `security_status`: copy of `$security-check-p1.output.verdict`
+- `behavioral_status`: copy the `solves_issue` field from the behavioral validation output above
+- `security_status`: copy the `verdict` field from the security check output above
 - `issues_to_fix`: array of objects, each with:
   - `category`: `"behavioral" | "test_failure" | "static_check" | "code_quality" | "security" | "scope"`
   - `severity`: `"critical" | "high" | "medium" | "low"`
