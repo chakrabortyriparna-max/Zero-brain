@@ -8,7 +8,7 @@ description: |
            verdicts only -- accept or reject. Ambiguous issues are rejected with an
            explanation; the human can reopen with more context if they disagree.
 
-provider: ollama
+provider: claude
 model: nemotron-3-ultra:cloud
 
 nodes:
