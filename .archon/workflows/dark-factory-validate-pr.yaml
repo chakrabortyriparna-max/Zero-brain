@@ -71,9 +71,10 @@ nodes:
     bash: |
       set -euo pipefail
       # Archon passes CLI args in $ARGUMENTS (e.g. "--pr 7" or just "7").
-      PR_NUMBER=$(echo "$ARGUMENTS" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+      # grep exits 1 on no match; with set -e that would kill the script, so || true.
+      PR_NUMBER=$(echo "$ARGUMENTS" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
       if [ -z "$PR_NUMBER" ]; then
-        PR_NUMBER=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
+        PR_NUMBER=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1 || true)
       fi
       if [ -z "$PR_NUMBER" ]; then
         echo "ERROR: No PR number found in arguments: $ARGUMENTS" >&2
