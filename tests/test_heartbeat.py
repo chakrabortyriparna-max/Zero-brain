@@ -194,10 +194,11 @@ class TestConfig:
             config_path = Path(td) / "heartbeat.json"
             config_path.write_text(json.dumps({"enable_drafting": True, "draft_expiry_hours": 48}), encoding="utf-8")
             with patch("heartbeat.CONFIG_FILE", config_path):
-                runner = HeartbeatRunner()
-                assert runner.config["enable_drafting"] is True
-                assert runner.config["draft_expiry_hours"] == 48
-                assert runner.use_llm is True
+                with patch("heartbeat.LLMClient"):
+                    runner = HeartbeatRunner()
+                    assert runner.config["enable_drafting"] is True
+                    assert runner.config["draft_expiry_hours"] == 48
+                    assert runner.use_llm is True
 
 
 class TestErrorAggregation:
