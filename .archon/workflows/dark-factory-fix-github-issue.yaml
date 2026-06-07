@@ -21,8 +21,8 @@ description: |
   - All other nodes still reference the language-agnostic bundled `archon-*` commands.
     Fork them later if they drift.
 
-provider: claude
-model: sonnet
+provider: ollama
+model: nemotron-3-ultra:cloud
 
 nodes:
   # ═══════════════════════════════════════════════════════════════
@@ -48,7 +48,7 @@ nodes:
   - id: classify-issue
     command: dark-factory-classify-issue
     depends_on: [fetch-issue]
-    model: haiku
+    model: minimax-m3:cloud
     allowed_tools: []
     output_format:
       type: object
@@ -170,7 +170,7 @@ nodes:
   - id: review-classify
     command: dark-factory-review-classify
     depends_on: [review-scope]
-    model: haiku
+    model: minimax-m3:cloud
     allowed_tools: []
     context: fresh
     output_format:
