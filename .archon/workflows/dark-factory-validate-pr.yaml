@@ -102,13 +102,11 @@ nodes:
     bash: |
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
-      # Cap at 3000 lines — FACTORY_RULES.md §3 already caps PRs at 500 lines
-      # changed; the 3000-line cap here is a defense against accidental huge diffs.
-      # On Windows/Git Bash, `head -N` closing the pipe early can kill gh with
-      # SIGPIPE / "The pipe is being closed". Disable pipefail so the node
-      # survives a truncated read and still exits 0.
-      set +o pipefail
-      gh pr diff "$PR_NUMBER" | head -3000
+      # Write diff to a temp file first, then emit the first 3000 lines.
+      # Avoids the Windows pipe-deadlock where `gh` hangs when `head`
+      # closes the read-end of the pipe early (SIGPIPE / pager issues).
+      GH_PAGER=cat gh pr diff "$PR_NUMBER" > "$ARTIFACTS_DIR/.pr-diff-raw"
+      head -n 3000 "$ARTIFACTS_DIR/.pr-diff-raw"
     depends_on: [fetch-pr]
     timeout: 20000
 
@@ -936,7 +934,9 @@ nodes:
       # Pull the latest — the fixer just pushed.
       git fetch origin "refs/pull/$PR_NUMBER/head" --quiet 2>/dev/null || true
       git pull --ff-only 2>/dev/null || true
-      gh pr diff "$PR_NUMBER" | head -3000
+      # Same pipe-deadlock defense as fetch-diff: write to file first, then head.
+      GH_PAGER=cat gh pr diff "$PR_NUMBER" > "$ARTIFACTS_DIR/.pr-diff-p2-raw"
+      head -n 3000 "$ARTIFACTS_DIR/.pr-diff-p2-raw"
     depends_on: [fix-issues]
     timeout: 30000
 
