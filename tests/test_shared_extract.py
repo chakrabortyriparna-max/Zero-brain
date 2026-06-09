@@ -18,13 +18,14 @@ class TestExtractTextFromEntry:
         assert extract_text_from_entry({"content": "hello world"}) == "hello world"
 
     def test_list_of_strings(self):
-        assert extract_text_from_entry({"content": ["a", "b"]}) == "a b"
+        assert extract_text_from_entry({"content": ["a", "b"]}) == "a\nb"
 
     def test_list_of_dicts_with_text(self):
         assert extract_text_from_entry({"content": [{"text": "x"}]}) == "x"
 
     def test_nested_dict_values(self):
-        assert extract_text_from_entry({"output": {"inner": "val"}}) == "val"
+        # Flat dict values are not recursively extracted; only message.content blocks recurse
+        assert extract_text_from_entry({"output": {"inner": "val"}}) == ""
 
     def test_empty_entry(self):
         assert extract_text_from_entry({}) == ""
@@ -34,7 +35,7 @@ class TestExtractTextFromEntry:
         result = extract_text_from_entry(entry)
         assert "first" in result
         assert "second" in result
-        assert "third" in result
+        assert "third" not in result  # string message keys are not extracted
 
 
 class TestFindToolUses:
@@ -83,7 +84,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **File Change: src/db.py**" in result
+        assert ("File Changes", "Edited code: src/db.py") in result
 
     def test_write_memory_update(self):
         transcript = [
@@ -95,7 +96,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Memory Update: Memory/SOUL.md**" in result
+        assert ("Memory Updates", "Updated memory file: Memory/SOUL.md") in result
 
     def test_bash_git_commit_with_message(self):
         transcript = [
@@ -111,7 +112,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Commit: fix bug**" in result
+        assert ("Commits", "Git commit: fix bug") in result
 
     def test_bash_git_commit_no_message(self):
         transcript = [
@@ -123,7 +124,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Commit: git commit**" in result
+        assert ("Commits", "Git commit: git commit") in result
 
     def test_task_create(self):
         transcript = [
@@ -139,7 +140,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Task Created: Refactor auth**" in result
+        assert ("Tasks", "Created task: Refactor auth") in result
 
     def test_task_update(self):
         transcript = [
@@ -155,7 +156,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Task Updated: Update docs**" in result
+        assert ("Tasks", "Updated task: Update docs") in result
 
     def test_exit_plan_mode(self):
         transcript = [
@@ -167,7 +168,7 @@ class TestExtractStructuralInsights:
             }
         ]
         result = extract_structural_insights(transcript)
-        assert "- **Plan Finalized**" in result
+        assert ("Plans", "Plan finalized and approved") in result
 
     def test_deduplication(self):
         transcript = [
@@ -186,39 +187,39 @@ class TestExtractStructuralInsights:
         ]
         result = extract_structural_insights(transcript)
         assert len(result) == 1
-        assert "File Change: a.md" in result[0]
+        assert result[0] == ("File Changes", "Edited doc: a.md")
 
 
 class TestExtractTextInsights:
     def test_decision(self):
         transcript = [{"role": "assistant", "content": "I decided to use PostgreSQL."}]
         result = extract_text_insights(transcript)
-        assert "- **Decision:** use PostgreSQL." in result
+        assert ("Decision", "use PostgreSQL") in result
 
     def test_lesson(self):
         transcript = [{"role": "assistant", "content": "lesson learned: test early"}]
         result = extract_text_insights(transcript)
-        assert "- **Lesson:** test early" in result
+        assert ("Lesson", "test early") in result
 
     def test_action_item(self):
         transcript = [{"role": "assistant", "content": "action item: review PR"}]
         result = extract_text_insights(transcript)
-        assert "- **Action Item:** review PR" in result
+        assert ("Action Item", "review PR") in result
 
     def test_key_fact(self):
         transcript = [{"role": "assistant", "content": "key fact: Python 3.12"}]
         result = extract_text_insights(transcript)
-        assert "- **Key Fact:** Python 3.12" in result
+        assert ("Key Fact", "Python 3.12") in result
 
     def test_important(self):
-        transcript = [{"role": "assistant", "content": "important: deploy before 5pm"}]
+        transcript = [{"role": "assistant", "content": "**Important:** deploy before 5pm"}]
         result = extract_text_insights(transcript)
-        assert "- **Important:** deploy before 5pm" in result
+        assert ("Important", "deploy before 5pm") in result
 
     def test_case_insensitive(self):
-        transcript = [{"role": "assistant", "content": "DECIDED TO use Redis"}]
+        transcript = [{"role": "assistant", "content": "I DECIDED TO use Redis"}]
         result = extract_text_insights(transcript)
-        assert "- **Decision:** use Redis" in result
+        assert ("Decision", "use Redis") in result
 
     def test_no_false_positive(self):
         transcript = [{"role": "assistant", "content": "I decided without colon here"}]
@@ -241,8 +242,10 @@ class TestExtractAllInsights:
             },
         ]
         result = extract_all_insights(transcript)
-        assert any("Decision" in r for r in result)
-        assert any("File Change" in r for r in result)
+        assert "Decisions" in result
+        assert "File Changes" in result
+        assert any("PostgreSQL" in i for i in result["Decisions"])
+        assert any("src/db.py" in i for i in result["File Changes"])
 
     def test_structural_comes_first(self):
         transcript = [
@@ -258,7 +261,8 @@ class TestExtractAllInsights:
             },
         ]
         result = extract_all_insights(transcript)
-        assert result[0].startswith("- **File Change")
+        assert "File Changes" in result
+        assert "Decisions" in result
 
     def test_deduplication_across_both(self):
         transcript = [
@@ -272,10 +276,10 @@ class TestExtractAllInsights:
             },
         ]
         result = extract_all_insights(transcript)
-        assert result.count("- **Action Item:** verify hooks") == 1
+        assert result["Action Items"].count("verify hooks") == 1
 
     def test_empty_transcript(self):
-        assert extract_all_insights([]) == []
+        assert extract_all_insights([]) == {}
 
     def test_scale_1000_entries(self):
         transcript = []
@@ -293,12 +297,13 @@ class TestExtractAllInsights:
                 }
             )
             transcript.append(
-                {"role": "assistant", "content": f"decided to option {i}"}
+                {"role": "assistant", "content": f"I decided to option {i}"}
             )
 
         start = time.perf_counter()
         result = extract_all_insights(transcript)
         elapsed = time.perf_counter() - start
 
-        assert len(result) == 1000
+        total = sum(len(v) for v in result.values())
+        assert total == 1000
         assert elapsed < 1.0

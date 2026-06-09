@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 PreCompact Hook for Riparna's Second Brain.
-Reads JSONL transcript from stdin, extracts key decisions/facts,
-appends them to today's daily log with IST timestamps.
+Reads JSONL transcript from stdin, extracts key decisions/facts/action items,
+and appends a categorized block to today's daily log with IST timestamps.
 """
 import sys
 import json
@@ -10,9 +10,8 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Allow importing shared_extract from the same directory
 sys.path.insert(0, str(SCRIPT_DIR))
-from shared_extract import extract_all_insights  # noqa: E402
+from shared_extract import extract_all_insights, format_insights  # noqa: E402
 
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DAILY_DIR = PROJECT_ROOT / "Memory" / "daily"
@@ -48,9 +47,9 @@ def main():
         except json.JSONDecodeError:
             continue
 
-    insights = extract_all_insights(transcript)
+    categorized = extract_all_insights(transcript)
 
-    if not insights:
+    if not categorized:
         # Nothing to save; exit quietly
         sys.exit(0)
 
@@ -59,7 +58,7 @@ def main():
     daily_file = ensure_daily_file(today)
 
     timestamp = now.strftime("%H:%M IST")
-    block = f"\n\n## Pre-Compact Flush — {timestamp}\n\n" + "\n".join(insights) + "\n"
+    block = format_insights(categorized, title=f"Pre-Compact Flush — {timestamp}")
 
     with open(daily_file, "a", encoding="utf-8") as f:
         f.write(block)

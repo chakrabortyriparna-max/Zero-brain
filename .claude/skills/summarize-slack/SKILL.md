@@ -1,8 +1,29 @@
 ---
 name: summarize-slack
-description: Summarize Slack channel activity and extract actionable insights — blockers, decisions, action items. Triggers on "summarize slack", "what happened in #channel", or when heartbeat checks Slack.
+description: 'STRICT trigger list ONLY activates on "summarize slack", "what happened in #channel", or when heartbeat checks Slack. NEVER triggers on code generation, email drafting, learning requests, note organization, file organization, research formatting, or PRD creation. MUST NOT post messages to Slack.'
 argument-hint: <channel-id-or-name> [hours-back]
 ---
+
+## Negative Triggers
+
+This skill MUST NOT trigger on:
+- **Code generation** — "write a script", "generate code" → route to `codegen-assist`
+- **Email drafting** — "draft email", "write reply" → route to `draft-ai-email`
+- **Learning requests** — "explain this", "help me learn" → route to `learn-unfamiliar-code`
+- **Note organization** — "organize these notes" → route to `organize-research`
+- **File organization** — "where should I save" → route to `vault-structure`
+- **PRD creation** — "create my second brain PRD" → route to `create-second-brain-prd`
+
+## Directives
+
+1. ALWAYS save summaries to `Memory/meetings/YYYY-MM-DD_slack_<channel>.md`.
+2. NEVER post messages to Slack or @mention users without explicit `approved=True`.
+3. MUST identify blockers, decisions, and action items in every summary.
+4. ALWAYS filter noise — skip bot messages, reactions, and emoji-only posts.
+5. MUST group insights by topic and surface key findings with timestamps.
+6. ALWAYS preserve original message context when quoting user statements.
+7. MUST output structured markdown matching the Output Format template exactly.
+8. CHECK that every extracted signal has a timestamp and an owner.
 
 # Summarize Slack
 

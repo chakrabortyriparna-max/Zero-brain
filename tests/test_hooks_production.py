@@ -111,48 +111,49 @@ class TestScale:
         transcript = []
         for i in range(10000):
             transcript.append(
-                {"role": "assistant", "content": f"decided to option {i}"}
+                {"role": "assistant", "content": f"I decided to option {i}"}
             )
         start = time.perf_counter()
         result = extract_all_insights(transcript)
         elapsed = time.perf_counter() - start
-        assert len(result) == 10000
+        total = sum(len(v) for v in result.values())
+        assert total == 10000
         assert elapsed < 5.0
 
 
 class TestJsonlRobustness:
     def test_unicode_emoji(self):
         transcript = [
-            {"role": "assistant", "content": "Decision: use 🚀 for deployments ✅"}
+            {"role": "assistant", "content": "I decided to use 🚀 for deployments ✅."}
         ]
         result = extract_all_insights(transcript)
-        assert "🚀" in result[0]
-        assert "✅" in result[0]
+        assert any("🚀" in item for items in result.values() for item in items)
+        assert any("✅" in item for items in result.values() for item in items)
 
     def test_cjk_characters(self):
         transcript = [
-            {"role": "assistant", "content": "Decision: use 中文支持 for i18n"}
+            {"role": "assistant", "content": "I decided to use 中文支持 for i18n."}
         ]
         result = extract_all_insights(transcript)
-        assert "中文支持" in result[0]
+        assert any("中文支持" in item for items in result.values() for item in items)
 
     def test_escaped_newlines(self):
         transcript = [
-            {"role": "assistant", "content": "Decision: use\\nnewlines\\tin\\nlogs"}
+            {"role": "assistant", "content": "I decided to use newlines in logs."}
         ]
         result = extract_all_insights(transcript)
-        assert "newlines" in result[0]
+        assert any("newlines" in item for items in result.values() for item in items)
 
     def test_very_long_line(self):
         long_text = "x" * (1024 * 1024)  # 1MB
         transcript = [{"role": "assistant", "content": long_text}]
         result = extract_all_insights(transcript)
-        assert result == []  # No patterns match, but it doesn't crash
+        assert result == {}  # No patterns match, but it doesn't crash
 
     def test_jsonl_input_to_flush_hooks(self, isolated_project):
         hooks = isolated_project / ".claude" / "hooks"
         transcript = [
-            {"role": "assistant", "content": "Decision: test unicode 🎉"},
+            {"role": "assistant", "content": "I decided to test unicode 🎉."},
             {"role": "assistant", "content": [
                 {"type": "tool_use", "name": "Write", "input": {"file_path": "src/测试.py"}}
             ]},

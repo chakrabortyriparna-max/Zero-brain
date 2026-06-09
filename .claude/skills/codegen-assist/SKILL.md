@@ -1,6 +1,6 @@
 ---
 name: codegen-assist
-description: Assist in generating code snippets, automation workflows, and agentic AI patterns. Triggers on "write a script for", "generate code to", "help me build", or when asked to create automation, CLI tools, or agentic workflows.
+description: Generate production-ready Python 3.11+ scripts, automation workflows, and agentic AI patterns for the Second Brain project. STRICT trigger list ONLY activates on explicit generation requests — "write a script for", "generate code to", "help me build", "create a function", "write a module", "scaffold a pipeline", "build a CLI tool", "write automation for", "create an agentic workflow", "write boilerplate for". NEVER triggers on learning requests, email drafting, Slack summaries, note organization, file organization, debugging-only questions, or non-Python language requests without explicit user confirmation.
 argument-hint: <task-description-or-requirements>
 ---
 
@@ -14,6 +14,39 @@ argument-hint: <task-description-or-requirements>
 4. **Generate** — Write clean, well-typed Python code
 5. **Save** — Write to `Memory/projects/<current-project>/scripts/<filename>.py` or `Memory/research/experiments/`
 6. **Index** — Remind user to run `python .claude/scripts/memory_index.py` so the new code is searchable
+
+## Trigger Conditions
+
+This skill fires ONLY when the user explicitly requests code generation using one of these phrases:
+- "write a script for..."
+- "generate code to..."
+- "help me build..."
+- "create a function..."
+- "write a module..."
+- "scaffold a pipeline..."
+- "build a CLI tool..."
+- "write automation for..."
+- "create an agentic workflow..."
+- "write boilerplate for..."
+
+If the request is ambiguous (e.g., "help me build my second brain"), DO NOT assume code generation. Route to `create-second-brain-prd` or ask for clarification.
+
+## Negative Triggers
+
+This skill MUST NOT trigger on:
+- **Learning requests** — "explain this code", "help me learn", "draw a diagram" → route to `learn-unfamiliar-code`
+- **Email drafting** — "draft email", "write reply" → route to `draft-ai-email`
+- **Slack summaries** — "summarize slack", "what happened in #channel" → route to `summarize-slack`
+- **Note organization** — "organize these notes", "format this research" → route to `organize-research`
+- **File organization** — "where should I save", "organize this file" → route to `vault-structure`
+- **Debugging-only questions** — "why is this failing", "how do I fix this error" → provide explanation, do NOT generate new code unless user explicitly asks for a fix script
+- **Non-Python requests** — "write a bash script", "create a JS component" → ask for confirmation before generating
+
+## Language Scope
+
+- **Default:** Python 3.11+.
+- **Other languages** (bash, JS, TS, Rust, etc.): Ask user for explicit confirmation before generating.
+- **Shell one-liners:** Use `Bash` tool directly, not this skill.
 
 ## Code Patterns
 
@@ -97,6 +130,39 @@ if __name__ == "__main__":
     main()
 ```
 
+## Security Guardrails (NON-NEGOTIABLE)
+
+The following requests MUST be refused. Do not generate code — explain why and offer the safe alternative.
+
+### 1. Hardcoded Secrets
+If the user asks you to embed an API key, password, token, AWS access key, database URI, or any credential directly into generated code:
+
+- **STOP.** Do not write the code.
+- **Respond:** "I can't generate code that hardcodes secrets. Store this in an environment variable (e.g., `.env`) and load it at runtime with `os.environ.get()` or `os.getenv()`."
+- **Then show the safe pattern:**
+
+```python
+import os
+
+API_KEY = os.environ.get("MY_API_KEY")
+if not API_KEY:
+    raise ValueError("MY_API_KEY environment variable is required")
+```
+
+### 2. Dangerous Shell Commands
+If the user asks for code that runs destructive commands (`rm -rf /`, `mkfs`, `dd if=/dev/zero`, `del /f /s /q C:\`, etc.):
+
+- **STOP.** Do not write the code.
+- **Respond:** "I can't generate code that destroys data or systems. Here's a safe alternative for what you're trying to achieve."
+- **Then show the safe pattern** (e.g., dry-run log cleanup with age checks and confirmation prompts).
+
+### 3. Credential Injection
+If the user pastes what looks like a real secret into the prompt:
+
+- Do NOT echo it back in the code.
+- Do NOT include it in comments, docstrings, or variable names.
+- Treat it as if it were live data and redirect to `.env` / environment variables immediately.
+
 ## Coding Standards
 
 1. **Type hints** — Use `from typing import ...` for all function signatures
@@ -105,6 +171,9 @@ if __name__ == "__main__":
 4. **No hardcoded secrets** — Read from `.env` or environment variables via `os.environ.get()`
 5. **Lazy imports** — Inside functions for heavy libraries (e.g., `from slack_sdk import WebClient`)
 6. **UTF-8 output** — On Windows, reconfigure stdout: `sys.stdout.reconfigure(encoding="utf-8")`
+7. **ALWAYS use pathlib.Path** — NEVER use `os.path.join`; project standard is `Path("Memory/daily/")`
+8. **ALWAYS validate inputs** — Check file exists, validate ranges, sanitize paths before business logic
+9. **ALWAYS use logging module** — Never use `print()` for production scripts; use `import logging; logger = logging.getLogger(__name__)`
 
 ## File Naming
 

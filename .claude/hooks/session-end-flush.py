@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-DIAGNOSTIC SessionEnd Hook.
-Logs exactly what stdin receives to a debug file before proceeding.
+SessionEnd Hook for Riparna's Second Brain.
+Reads the session transcript, extracts insights, and appends a categorized
+block to today's daily log with IST timestamps.
 """
 import sys
 import json
@@ -10,11 +11,10 @@ from datetime import datetime, timezone, timedelta
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from shared_extract import extract_all_insights  # noqa: E402
+from shared_extract import extract_all_insights, format_insights  # noqa: E402
 
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DAILY_DIR = PROJECT_ROOT / "Memory" / "daily"
-DEBUG_FILE = PROJECT_ROOT / ".claude" / "data" / "session-end-debug.log"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -39,41 +39,39 @@ def main():
     raw_stdin = sys.stdin.read()
     lines = raw_stdin.splitlines()
 
-    # DEBUG: log what we received
-    DEBUG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(DEBUG_FILE, "a", encoding="utf-8") as dbg:
-        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        dbg.write(f"\n=== SessionEnd triggered at {now} ===\n")
-        dbg.write(f"Raw stdin length: {len(raw_stdin)} chars\n")
-        dbg.write(f"Number of lines: {len(lines)}\n")
-        if lines:
-            dbg.write("First 5 lines:\n")
-            for i, line in enumerate(lines[:5]):
-                dbg.write(f"  [{i}] {line[:200]}\n")
-        else:
-            dbg.write("STDIN IS EMPTY\n")
-
+    # Parse metadata JSON from stdin to get transcript_path
     transcript = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
         try:
-            transcript.append(json.loads(line))
+            metadata = json.loads(line)
+            transcript_path = metadata.get("transcript_path")
+            if transcript_path:
+                tp = Path(transcript_path)
+                if tp.exists():
+                    with open(tp, "r", encoding="utf-8") as tf:
+                        for tline in tf:
+                            tline = tline.strip()
+                            if not tline:
+                                continue
+                            try:
+                                transcript.append(json.loads(tline))
+                            except json.JSONDecodeError:
+                                continue
+            else:
+                # Fallback: treat stdin lines as transcript entries directly
+                try:
+                    transcript.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
         except json.JSONDecodeError:
             continue
 
-    insights = extract_all_insights(transcript)
+    categorized = extract_all_insights(transcript)
 
-    # DEBUG: log extraction results
-    with open(DEBUG_FILE, "a", encoding="utf-8") as dbg:
-        dbg.write(f"Transcript entries parsed: {len(transcript)}\n")
-        dbg.write(f"Insights extracted: {len(insights)}\n")
-        if insights:
-            for ins in insights:
-                dbg.write(f"  - {ins}\n")
-
-    if not insights:
+    if not categorized:
         sys.exit(0)
 
     now = datetime.now(IST)
@@ -81,7 +79,7 @@ def main():
     daily_file = ensure_daily_file(today)
 
     timestamp = now.strftime("%H:%M IST")
-    block = f"\n\n## Session End — {timestamp}\n\n" + "\n".join(insights) + "\n"
+    block = format_insights(categorized, title=f"Session End — {timestamp}")
 
     with open(daily_file, "a", encoding="utf-8") as f:
         f.write(block)

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "scripts_embedder", "label": "Embedder", "file_type": "code", "source_file": ".claude/scripts/embeddings.py", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null, "rationale": "Lazy-loads the FastEmbed model to avoid heavy import overhead until the first embedding call."}], "edges": [], "hyperedges": []}

@@ -1,0 +1,23 @@
+{
+  "enable_drafting": false,
+  "llm_backend": "auto",
+  "llm_fallback": true,
+  "draft_expiry_hours": 24,
+  "retry_attempts": 3,
+  "retry_backoff_seconds": 2,
+  "request_timeout_seconds": 60,
+  "keyword_flags": ["urgent", "deadline", "asap", "action required", "please reply"],
+  "integrations": {
+    "gmail": { "enabled": true, "max_results": 20 },
+    "github": { "enabled": true, "commit_limit": 20 },
+    "slack": { "enabled": true, "message_limit": 50 }
+  },
+  "habits": {
+    "auto_detect_main_project": true,
+    "auto_detect_community": true
+  },
+  "notifications": {
+    "enabled": false,
+    "urgent_only": true
+  }
+}
