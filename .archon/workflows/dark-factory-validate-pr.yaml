@@ -1,4 +1,4 @@
-﻿name: dark-factory-validate-pr
+name: dark-factory-validate-pr
 description: |
   Use when: Dark Factory orchestrator wants to validate a PR labeled `factory:needs-review`
             against its linked issue, run static + unit + E2E (agent-browser) checks under
