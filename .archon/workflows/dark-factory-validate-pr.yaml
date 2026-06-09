@@ -102,15 +102,29 @@ nodes:
     bash: |
       set -euo pipefail
       PR_NUMBER=$(cat "$ARTIFACTS_DIR/.pr-number")
-      # Cap at 3000 lines — FACTORY_RULES.md §3 already caps PRs at 500 lines
-      # changed; the 3000-line cap here is a defense against accidental huge diffs.
-      # On Windows/Git Bash, `head -N` closing the pipe early can kill gh with
-      # SIGPIPE / "The pipe is being closed". Disable pipefail so the node
-      # survives a truncated read and still exits 0.
-      set +o pipefail
-      gh pr diff "$PR_NUMBER" | head -3000
+      echo "Fetching diff for PR #$PR_NUMBER ..."
+
+      # Defense 1: write to file first (avoids pipe-deadlock with head).
+      # Defense 2: redirect stdin from /dev/null so gh can never prompt
+      # interactively for credentials or pager input on Windows.
+      # Defense 3: --no-color keeps output plain and smaller.
+      if GH_PAGER=cat gh pr diff "$PR_NUMBER" --no-color \
+         > "$ARTIFACTS_DIR/.pr-diff-raw" < /dev/null 2>&1; then
+        echo "gh pr diff succeeded"
+      else
+        echo "WARN: gh pr diff failed or timed out — falling back to git diff" >&2
+        # Fallback: fetch the PR head ref and diff against base branch.
+        # This avoids gh entirely and is immune to pager/auth hangs.
+        BASE_REF=$(gh pr view "$PR_NUMBER" --json baseRefName -q '.baseRefName' < /dev/null)
+        git fetch origin "refs/pull/$PR_NUMBER/head:pr-$PR_NUMBER" --quiet 2>/dev/null || true
+        git diff "origin/$BASE_REF" "pr-$PR_NUMBER" --no-color \
+          > "$ARTIFACTS_DIR/.pr-diff-raw" 2>/dev/null || true
+      fi
+
+      # Emit first 3000 lines so downstream nodes don't choke on giant diffs.
+      head -n 3000 "$ARTIFACTS_DIR/.pr-diff-raw"
     depends_on: [fetch-pr]
-    timeout: 20000
+    timeout: 60000
 
   - id: fetch-linked-issue
     bash: |

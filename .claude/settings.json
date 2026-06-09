@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/session-start-context.py"
+            "command": "python \"C:/Users/chakr/OneDrive/Desktop/zero BRAIN/second-brain-starter/.claude/hooks/session-start-context.py\""
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/pre-compact-flush.py"
+            "command": "python \"C:/Users/chakr/OneDrive/Desktop/zero BRAIN/second-brain-starter/.claude/hooks/pre-compact-flush.py\""
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/session-end-flush.py"
+            "command": "python \"C:/Users/chakr/OneDrive/Desktop/zero BRAIN/second-brain-starter/.claude/hooks/session-end-flush.py\""
           }
         ]
       }
