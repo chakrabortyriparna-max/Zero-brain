@@ -22,7 +22,15 @@ from github import Github
 
 
 def load_diff(path: str) -> str:
-    return Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8")
+    # Truncate very large diffs to avoid API payload limits.
+    max_chars = 50000
+    if len(text) > max_chars:
+        text = text[:max_chars] + (
+            f"\n\n---\n[NOTE: Diff truncated from {len(text):,} characters "
+            f"to {max_chars:,} to fit API limits.]\n"
+        )
+    return text
 
 
 def build_review_prompt(diff: str) -> str:
@@ -90,7 +98,15 @@ def call_ollama(prompt: str) -> str:
     }
 
     response = requests.post(url, headers=headers, json=payload, timeout=120)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"[ERROR] Ollama API error: {e}", file=sys.stderr)
+        try:
+            print(f"[ERROR] Response body: {response.text}", file=sys.stderr)
+        except Exception:
+            pass
+        raise
     data = response.json()
     return data.get("response", data.get("message", {}).get("content", ""))
 
